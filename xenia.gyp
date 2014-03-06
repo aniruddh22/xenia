@@ -5,6 +5,7 @@
     'third_party/beaengine.gypi',
     'third_party/gflags.gypi',
     'third_party/jansson.gypi',
+    'third_party/lemon.gypi',
     'third_party/llvm.gypi',
     'third_party/sparsehash.gypi',
     'third_party/wslay.gypi',
@@ -23,6 +24,18 @@
     'library%': 'static_library',
     'target_arch%': 'x64',
   },
+
+  'conditions': [
+    ['OS=="win"', {
+      'variables': {
+        'move_command%': 'move'
+      },
+    }, {
+      'variables': {
+        'move_command%': 'mv'
+      },
+    }]
+  ],
 
   'target_defaults': {
     'include_dirs': [
@@ -188,6 +201,7 @@
       'dependencies': [
         'beaengine',
         'gflags',
+        'lemon',
         'llvm',
       ],
       'export_dependent_settings': [
@@ -239,10 +253,33 @@
       'include_dirs': [
         '.',
         'src/',
+        '<(INTERMEDIATE_DIR)',
       ],
 
       'includes': [
         'src/alloy/sources.gypi',
+      ],
+
+      'rules': [
+        {
+          'rule_name': 'generate_lemon',
+          'extension': 'y',
+          'inputs': [
+          ],
+          'outputs': [
+            '<(INTERMEDIATE_DIR)/<(RULE_INPUT_NAME).cc',
+            '<(INTERMEDIATE_DIR)/<(RULE_INPUT_NAME).h',
+          ],
+          'message': 'Processing lemon file <(RULE_INPUT_NAME)...',
+          'action': [
+            '<(PRODUCT_DIR)/lemon',
+            '-T../../third_party/lemon/lempar.cc',
+            '-o<(INTERMEDIATE_DIR)/<(RULE_INPUT_NAME).cc',
+            '<(RULE_INPUT_PATH)',
+          ],
+          'msvs_cygwin_shell': 0,
+          'process_outputs_as_sources': 1,
+        }
       ],
     },
 

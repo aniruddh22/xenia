@@ -17,6 +17,8 @@ DebugInfo::DebugInfo() :
     source_disasm_(0),
     raw_hir_disasm_(0),
     hir_disasm_(0),
+    raw_lir_disasm_(0),
+    lir_disasm_(0),
     machine_code_disasm_(0),
     source_map_count_(0),
     source_map_(NULL) {
@@ -27,6 +29,8 @@ DebugInfo::~DebugInfo() {
   xe_free(source_disasm_);
   xe_free(raw_hir_disasm_);
   xe_free(hir_disasm_);
+  xe_free(raw_lir_disasm_);
+  xe_free(lir_disasm_);
   xe_free(machine_code_disasm_);
 }
 
@@ -54,6 +58,17 @@ SourceMapEntry* DebugInfo::LookupHIROffset(uint64_t offset) {
   for (size_t n = 0; n < source_map_count_; n++) {
     auto entry = &source_map_[n];
     if (entry->hir_offset >= offset) {
+      return entry;
+    }
+  }
+  return NULL;
+}
+
+SourceMapEntry* DebugInfo::LookupLIROffset(uint64_t offset) {
+  // TODO(benvanik): binary search? We know the list is sorted by code order.
+  for (size_t n = 0; n < source_map_count_; n++) {
+    auto entry = &source_map_[n];
+    if (entry->lir_offset >= offset) {
       return entry;
     }
   }
