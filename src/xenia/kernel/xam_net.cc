@@ -66,7 +66,7 @@ SHIM_CALL NetDll_WSAStartup_shim(
 SHIM_CALL NetDll_WSAGetLastError_shim(
     PPCContext* ppc_state, KernelState* state) {
   XELOGD("NetDll_WSAGetLastError()");
-  SHIM_SET_RETURN_32(WSAENETDOWN);
+  SHIM_SET_RETURN_32(0); // Placeholder... should be WSAENETDOWN
 }
 
 SHIM_CALL NetDll_XNetGetEthernetLinkStatus_shim(
@@ -77,7 +77,10 @@ SHIM_CALL NetDll_XNetGetEthernetLinkStatus_shim(
   XELOGD(
       "NetDll_XNetGetEthernetLinkStatus(%d)",
       arg0);
-  SHIM_SET_RETURN_32(0);
+
+  ///TODO: Return 0 if net not done
+
+  SHIM_SET_RETURN_32(1);
 }
 
 SHIM_CALL NetDll_inet_addr_shim(
