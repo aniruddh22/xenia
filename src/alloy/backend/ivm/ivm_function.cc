@@ -23,7 +23,7 @@ using namespace alloy::runtime;
 IVMFunction::IVMFunction(FunctionInfo* symbol_info) :
     register_count_(0), intcode_count_(0), intcodes_(0),
     source_map_count_(0), source_map_(0),
-    GuestFunction(symbol_info) {
+    Function(symbol_info) {
 }
 
 IVMFunction::~IVMFunction() {
@@ -33,6 +33,7 @@ IVMFunction::~IVMFunction() {
 
 void IVMFunction::Setup(TranslationContext& ctx) {
   register_count_ = ctx.register_count;
+  stack_size_ = ctx.stack_size;
   intcode_count_ = ctx.intcode_count;
   intcodes_ = (IntCode*)ctx.intcode_arena->CloneContents();
   source_map_count_ = ctx.source_map_count;
@@ -102,19 +103,23 @@ void IVMFunction::OnBreakpointHit(ThreadState* thread_state, IntCode* i) {
   debugger->OnBreakpointHit(thread_state, breakpoint);
 }
 
+#undef TRACE_SOURCE_OFFSET
+
 int IVMFunction::CallImpl(ThreadState* thread_state, uint64_t return_address) {
   // Setup register file on stack.
   auto stack = (IVMStack*)thread_state->backend_data();
   auto register_file = (Register*)stack->Alloc(register_count_);
+  auto local_stack = (uint8_t*)alloca(stack_size_);
 
   Memory* memory = thread_state->memory();
 
   IntCodeState ics;
   ics.rf = register_file;
+  ics.locals = local_stack;
   ics.context = (uint8_t*)thread_state->raw_context();
   ics.membase = memory->membase();
-  ics.reserve_address = memory->reserve_address();
   ics.did_carry = 0;
+  ics.did_saturate = 0;
   ics.access_callbacks = thread_state->runtime()->access_callbacks();
   ics.thread_state = thread_state;
   ics.return_address = return_address;
@@ -125,6 +130,10 @@ int IVMFunction::CallImpl(ThreadState* thread_state, uint64_t return_address) {
   // TODO(benvanik): DID_CARRY -- need HIR to set a OPCODE_FLAG_SET_CARRY
   //                 or something so the fns can set an ics flag.
 
+#ifdef TRACE_SOURCE_OFFSET
+  size_t source_index = 0;
+#endif
+
   uint32_t ia = 0;
   while (true) {
     // Check suspend. We could do this only on certain instructions, if we
@@ -132,6 +141,18 @@ int IVMFunction::CallImpl(ThreadState* thread_state, uint64_t return_address) {
     if (*suspend_flag_address) {
       thread_state->EnterSuspend();
     }
+
+#ifdef TRACE_SOURCE_OFFSET
+    uint64_t source_offset = -1;
+    if (source_index < this->source_map_count_ &&
+        this->source_map_[source_index].intcode_index <= ia) {
+      while (source_index + 1 < this->source_map_count_ &&
+             this->source_map_[source_index + 1].intcode_index <= ia) {
+        source_index++;
+      }
+      source_offset = this->source_map_[source_index].source_offset;
+    }
+#endif
 
     IntCode* i = &intcodes_[ia];
 
@@ -146,6 +167,9 @@ int IVMFunction::CallImpl(ThreadState* thread_state, uint64_t return_address) {
       break;
     } else {
       ia = new_ia;
+#ifdef TRACE_SOURCE_OFFSET
+      source_index = 0;
+#endif
     }
   }
 

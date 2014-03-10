@@ -10,9 +10,10 @@
 #include <xenia/kernel/objects/xthread.h>
 
 #include <xenia/cpu/cpu.h>
+#include <xenia/kernel/native_list.h>
 #include <xenia/kernel/xboxkrnl_threading.h>
 #include <xenia/kernel/objects/xevent.h>
-#include <xenia/kernel/objects/xmodule.h>
+#include <xenia/kernel/objects/xuser_module.h>
 
 
 using namespace alloy;
@@ -53,6 +54,9 @@ XThread::XThread(KernelState* kernel_state,
     creation_params_.stack_size = 16 * 1024 * 1024;
   }
 
+  apc_lock_ = xe_mutex_alloc();
+  apc_list_ = new NativeList(kernel_state->memory());
+
   event_ = new XEvent(kernel_state);
   event_->Initialize(true, false);
 
@@ -63,6 +67,9 @@ XThread::XThread(KernelState* kernel_state,
 XThread::~XThread() {
   // Unregister first to prevent lookups while deleting.
   kernel_state_->UnregisterThread(this);
+
+  delete apc_list_;
+  xe_mutex_free(apc_lock_);
 
   event_->Release();
 
@@ -140,7 +147,7 @@ void XThread::set_name(const char* name) {
   }
   name_ = xestrdupa(name);
 
-#if XE_PLATFORM(WIN32)
+#if XE_PLATFORM_WIN32
   // Do the nasty set for us.
   #pragma pack(push, 8)
   typedef struct tagTHREADNAME_INFO {
@@ -185,7 +192,7 @@ X_STATUS XThread::Create() {
   // Set native info.
   SetNativePointer(thread_state_address_);
 
-  XModule* module = kernel_state()->GetExecutableModule();
+  XUserModule* module = kernel_state()->GetExecutableModule();
 
   // Allocate TLS block.
   const xe_xex2_header_t* header = module->xex_header();
@@ -242,7 +249,7 @@ X_STATUS XThread::Exit(int exit_code) {
   return X_STATUS_SUCCESS;
 }
 
-#if XE_PLATFORM(WIN32)
+#if XE_PLATFORM_WIN32
 
 static uint32_t __stdcall XThreadStartCallbackWin32(void* param) {
   XThread* thread = reinterpret_cast<XThread*>(param);
@@ -301,7 +308,7 @@ X_STATUS XThread::PlatformCreate() {
 
   int result_code;
   if (creation_params_.creation_flags & X_CREATE_SUSPENDED) {
-#if XE_PLATFORM(OSX)
+#if XE_PLATFORM_OSX
     result_code = pthread_create_suspended_np(
         reinterpret_cast<pthread_t*>(&thread_handle_),
         &attr,
@@ -380,6 +387,14 @@ uint32_t XThread::RaiseIrql(uint32_t new_irql) {
 
 void XThread::LowerIrql(uint32_t new_irql) {
   irql_ = new_irql;
+}
+
+void XThread::LockApc() {
+  xe_mutex_lock(apc_lock_);
+}
+
+void XThread::UnlockApc() {
+  xe_mutex_unlock(apc_lock_);
 }
 
 int32_t XThread::QueryPriority() {

@@ -91,10 +91,10 @@ int Runtime::Initialize(Frontend* frontend, Backend* backend) {
 #endif  // ALLOY_HAS_IVM_BACKEND
     if (FLAGS_runtime_backend == "any") {
 #if defined(ALLOY_HAS_X64_BACKEND) && ALLOY_HAS_X64_BACKEND
-      /*if (!backend) {
+      if (!backend) {
         backend = new alloy::backend::x64::X64Backend(
             this);
-      }*/
+      }
 #endif  // ALLOY_HAS_X64_BACKEND
 #if defined(ALLOY_HAS_IVM_BACKEND) && ALLOY_HAS_IVM_BACKEND
       if (!backend) {
@@ -250,7 +250,7 @@ int Runtime::DemandFunction(
   if (symbol_status == SymbolInfo::STATUS_NEW) {
     // Symbol is undefined, so define now.
     Function* function = NULL;
-    int result = frontend_->DefineFunction(symbol_info, false, &function);
+    int result = frontend_->DefineFunction(symbol_info, DEBUG_INFO_DEFAULT, &function);
     if (result) {
       symbol_info->set_status(SymbolInfo::STATUS_FAILED);
       return result;

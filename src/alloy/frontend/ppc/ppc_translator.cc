@@ -12,6 +12,7 @@
 #include <alloy/alloy-private.h>
 #include <alloy/compiler/compiler_passes.h>
 #include <alloy/frontend/tracing.h>
+#include <alloy/frontend/ppc/ppc_disasm.h>
 #include <alloy/frontend/ppc/ppc_frontend.h>
 #include <alloy/frontend/ppc/ppc_hir_builder.h>
 #include <alloy/frontend/ppc/ppc_instr.h>
@@ -29,24 +30,49 @@ using namespace alloy::runtime;
 
 PPCTranslator::PPCTranslator(PPCFrontend* frontend) :
     frontend_(frontend) {
+  Backend* backend = frontend->runtime()->backend();
+
   scanner_ = new PPCScanner(frontend);
   builder_ = new PPCHIRBuilder(frontend);
-
   compiler_ = new Compiler(frontend->runtime());
-
-  compiler_->AddPass(new passes::ContextPromotionPass());
-  compiler_->AddPass(new passes::SimplificationPass());
-  // TODO(benvanik): run repeatedly?
-  compiler_->AddPass(new passes::ConstantPropagationPass());
-  //compiler_->AddPass(new passes::TypePropagationPass());
-  //compiler_->AddPass(new passes::ByteSwapEliminationPass());
-  compiler_->AddPass(new passes::SimplificationPass());
-  //compiler_->AddPass(new passes::DeadStoreEliminationPass());
-  compiler_->AddPass(new passes::DeadCodeEliminationPass());
-
-  Backend* backend = frontend->runtime()->backend();
   assembler_ = backend->CreateAssembler();
   assembler_->Initialize();
+
+  bool validate = FLAGS_validate_hir;
+
+  // Build the CFG first.
+  compiler_->AddPass(new passes::ControlFlowAnalysisPass());
+
+  // Passes are executed in the order they are added. Multiple of the same
+  // pass type may be used.
+  if (validate) compiler_->AddPass(new passes::ValidationPass());
+  compiler_->AddPass(new passes::ContextPromotionPass());
+  if (validate) compiler_->AddPass(new passes::ValidationPass());
+  compiler_->AddPass(new passes::SimplificationPass());
+  if (validate) compiler_->AddPass(new passes::ValidationPass());
+  compiler_->AddPass(new passes::ConstantPropagationPass());
+  if (validate) compiler_->AddPass(new passes::ValidationPass());
+  compiler_->AddPass(new passes::SimplificationPass());
+  if (validate) compiler_->AddPass(new passes::ValidationPass());
+  //compiler_->AddPass(new passes::DeadStoreEliminationPass());
+  //if (validate) compiler_->AddPass(new passes::ValidationPass());
+  compiler_->AddPass(new passes::DeadCodeEliminationPass());
+  if (validate) compiler_->AddPass(new passes::ValidationPass());
+
+  //// Removes all unneeded variables. Try not to add new ones after this.
+  //compiler_->AddPass(new passes::ValueReductionPass());
+  //if (validate) compiler_->AddPass(new passes::ValidationPass());
+
+  // Register allocation for the target backend.
+  // Will modify the HIR to add loads/stores.
+  // This should be the last pass before finalization, as after this all
+  // registers are assigned and ready to be emitted.
+  compiler_->AddPass(new passes::RegisterAllocationPass(
+      backend->machine_info()));
+  if (validate) compiler_->AddPass(new passes::ValidationPass());
+
+  // Must come last. The HIR is not really HIR after this.
+  compiler_->AddPass(new passes::FinalizationPass());
 }
 
 PPCTranslator::~PPCTranslator() {
@@ -58,7 +84,7 @@ PPCTranslator::~PPCTranslator() {
 
 int PPCTranslator::Translate(
     FunctionInfo* symbol_info,
-    bool with_debug_info,
+    uint32_t debug_info_flags,
     Function** out_function) {
   // Scan the function to find its extents. We only need to do this if we
   // haven't already been provided with them from some other source.
@@ -73,19 +99,18 @@ int PPCTranslator::Translate(
   }
 
   // NOTE: we only want to do this when required, as it's expensive to build.
+  if (FLAGS_always_disasm) {
+    debug_info_flags |= DEBUG_INFO_ALL_DISASM;
+  }
   DebugInfo* debug_info = NULL;
-  if (FLAGS_always_disasm || with_debug_info) {
+  if (debug_info_flags) {
     debug_info = new DebugInfo();
   }
 
   // Stash source.
-  if (debug_info) {
+  if (debug_info_flags & DEBUG_INFO_SOURCE_DISASM) {
     DumpSource(symbol_info, &string_buffer_);
     debug_info->set_source_disasm(string_buffer_.ToString());
-    string_buffer_.Reset();
-
-    DumpSourceJson(symbol_info, &string_buffer_);
-    debug_info->set_source_json(string_buffer_.ToString());
     string_buffer_.Reset();
   }
 
@@ -94,7 +119,7 @@ int PPCTranslator::Translate(
   XEEXPECTZERO(result);
 
   // Stash raw HIR.
-  if (debug_info) {
+  if (debug_info_flags & DEBUG_INFO_RAW_HIR_DISASM) {
     builder_->Dump(&string_buffer_);
     debug_info->set_raw_hir_disasm(string_buffer_.ToString());
     string_buffer_.Reset();
@@ -105,14 +130,17 @@ int PPCTranslator::Translate(
   XEEXPECTZERO(result);
 
   // Stash optimized HIR.
-  if (debug_info) {
+  if (debug_info_flags & DEBUG_INFO_HIR_DISASM) {
     builder_->Dump(&string_buffer_);
     debug_info->set_hir_disasm(string_buffer_.ToString());
     string_buffer_.Reset();
   }
 
   // Assemble to backend machine code.
-  result = assembler_->Assemble(symbol_info, builder_, debug_info, out_function);
+  result = assembler_->Assemble(
+      symbol_info, builder_,
+      debug_info_flags, debug_info,
+      out_function);
   XEEXPECTZERO(result);
 
   result = 0;
@@ -159,82 +187,8 @@ void PPCTranslator::DumpSource(
       ++block_it;
     }
 
-    if (!i.type) {
-      string_buffer->Append("%.8X %.8X ???", address, i.code);
-    } else if (i.type->disassemble) {
-      ppc::InstrDisasm d;
-      i.type->disassemble(i, d);
-      std::string disasm;
-      d.Dump(disasm);
-      string_buffer->Append("%.8X %.8X %s", address, i.code, disasm.c_str());
-    } else {
-      string_buffer->Append("%.8X %.8X %s ???", address, i.code, i.type->name);
-    }
+    string_buffer->Append("%.8X %.8X   ", address, i.code);
+    DisasmPPC(i, string_buffer);
     string_buffer->Append("\n");
   }
-}
-
-void PPCTranslator::DumpSourceJson(
-    runtime::FunctionInfo* symbol_info, StringBuffer* string_buffer) {
-  Memory* memory = frontend_->memory();
-  const uint8_t* p = memory->membase();
-
-  string_buffer->Append("{\n");
-
-  auto blocks = scanner_->FindBlocks(symbol_info);
-  string_buffer->Append("\"blocks\": [\n");
-  for (auto it = blocks.begin(); it != blocks.end(); ++it) {
-    string_buffer->Append("{ \"start\": %u, \"end\": %u }%c",
-                          it->start_address, it->end_address,
-                          (it + 1 != blocks.end()) ? ',' : ' ');
-  }
-  string_buffer->Append("],\n");
-
-  string_buffer->Append("\"lines\": [\n");
-  uint64_t start_address = symbol_info->address();
-  uint64_t end_address = symbol_info->end_address();
-  InstrData i;
-  auto block_it = blocks.begin();
-  for (uint64_t address = start_address, offset = 0; address <= end_address;
-       address += 4, offset++) {
-    i.address = address;
-    i.code = XEGETUINT32BE(p + address);
-    // TODO(benvanik): find a way to avoid using the opcode tables.
-    i.type = GetInstrType(i.code);
-
-    // Check labels.
-    if (block_it != blocks.end() &&
-        block_it->start_address == address) {
-      if (address != start_address) {
-        // Whitespace to pad blocks.
-        string_buffer->Append(
-            "[\"c\", %u, 0, \"\", \"\"],\n",
-            address);
-      }
-      string_buffer->Append(
-          "[\"l\", %u, 0, \"loc_%.8X:\", \"\"],\n",
-          address, address);
-      ++block_it;
-    }
-
-    const char* disasm_str = "";
-    const char* comment_str = "";
-    std::string disasm;
-    if (!i.type) {
-      disasm_str = "?";
-    } else if (i.type->disassemble) {
-      ppc::InstrDisasm d;
-      i.type->disassemble(i, d);
-      d.Dump(disasm);
-      disasm_str = disasm.c_str();
-    } else {
-      disasm_str = i.type->name;
-    }
-    string_buffer->Append("[\"i\", %u, %u, \"    %s\", \"%s\"]%c\n",
-                          address, i.code, disasm_str, comment_str,
-                          (address + 4 <= end_address) ? ',' : ' ');
-  }
-  string_buffer->Append("]\n");
-
-  string_buffer->Append("}\n");
 }

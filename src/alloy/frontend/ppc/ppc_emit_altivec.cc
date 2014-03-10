@@ -23,10 +23,7 @@ namespace frontend {
 namespace ppc {
 
 
-Value* CalculateEA(PPCHIRBuilder& f, uint32_t ra, uint32_t rb);
 Value* CalculateEA_0(PPCHIRBuilder& f, uint32_t ra, uint32_t rb);
-Value* CalculateEA_i(PPCHIRBuilder& f, uint32_t ra, uint64_t imm);
-Value* CalculateEA_0_i(PPCHIRBuilder& f, uint32_t ra, uint64_t imm);
 
 
 #define SHUFPS_SWAP_DWORDS 0x1B
@@ -142,7 +139,7 @@ XEEMITTER(lvewx,          0x7C00008E, X   )(PPCHIRBuilder& f, InstrData& i) {
   return InstrEmit_lvewx_(f, i, i.X.RT, i.X.RA, i.X.RB);
 }
 XEEMITTER(lvewx128,       VX128_1(4, 131),  VX128_1)(PPCHIRBuilder& f, InstrData& i) {
-  return InstrEmit_lvewx_(f, i, i.X.RT, i.X.RA, i.X.RB);
+  return InstrEmit_lvewx_(f, i,  VX128_1_VD128, i.VX128_1.RA, i.VX128_1.RB);
 }
 
 int InstrEmit_lvsl_(PPCHIRBuilder& f, InstrData& i, uint32_t vd, uint32_t ra, uint32_t rb) {
@@ -156,7 +153,7 @@ XEEMITTER(lvsl,           0x7C00000C, X   )(PPCHIRBuilder& f, InstrData& i) {
   return InstrEmit_lvsl_(f, i, i.X.RT, i.X.RA, i.X.RB);
 }
 XEEMITTER(lvsl128,        VX128_1(4, 3),    VX128_1)(PPCHIRBuilder& f, InstrData& i) {
-  return InstrEmit_lvsl_(f, i, i.X.RT, i.X.RA, i.X.RB);
+  return InstrEmit_lvsl_(f, i,  VX128_1_VD128, i.VX128_1.RA, i.VX128_1.RB);
 }
 
 int InstrEmit_lvsr_(PPCHIRBuilder& f, InstrData& i, uint32_t vd, uint32_t ra, uint32_t rb) {
@@ -170,11 +167,11 @@ XEEMITTER(lvsr,           0x7C00004C, X   )(PPCHIRBuilder& f, InstrData& i) {
   return InstrEmit_lvsr_(f, i, i.X.RT, i.X.RA, i.X.RB);
 }
 XEEMITTER(lvsr128,        VX128_1(4, 67),   VX128_1)(PPCHIRBuilder& f, InstrData& i) {
-  return InstrEmit_lvsr_(f, i, i.X.RT, i.X.RA, i.X.RB);
+  return InstrEmit_lvsr_(f, i,  VX128_1_VD128, i.VX128_1.RA, i.VX128_1.RB);
 }
 
 int InstrEmit_lvx_(PPCHIRBuilder& f, InstrData& i, uint32_t vd, uint32_t ra, uint32_t rb) {
-  Value* ea = CalculateEA_0(f, ra, rb);
+  Value* ea = f.And(CalculateEA_0(f, ra, rb), f.LoadConstant(~0xFull));
   f.StoreVR(vd, f.ByteSwap(f.Load(ea, VEC128_TYPE)));
   return 0;
 }
@@ -220,11 +217,11 @@ XEEMITTER(stvewx,         0x7C00018E, X   )(PPCHIRBuilder& f, InstrData& i) {
   return InstrEmit_stvewx_(f, i, i.X.RT, i.X.RA, i.X.RB);
 }
 XEEMITTER(stvewx128,      VX128_1(4, 387),  VX128_1)(PPCHIRBuilder& f, InstrData& i) {
-  return InstrEmit_stvewx_(f, i, i.X.RT, i.X.RA, i.X.RB);
+  return InstrEmit_stvewx_(f, i, VX128_1_VD128, i.VX128_1.RA, i.VX128_1.RB);
 }
 
 int InstrEmit_stvx_(PPCHIRBuilder& f, InstrData& i, uint32_t vd, uint32_t ra, uint32_t rb) {
-  Value* ea = CalculateEA_0(f, ra, rb);
+  Value* ea = f.And(CalculateEA_0(f, ra, rb), f.LoadConstant(~0xFull));
   f.Store(ea, f.ByteSwap(f.LoadVR(vd)));
   return 0;
 }
@@ -246,7 +243,8 @@ XEEMITTER(stvxl128,       VX128_1(4, 963),  VX128_1)(PPCHIRBuilder& f, InstrData
 int InstrEmit_lvlx_(PPCHIRBuilder& f, InstrData& i, uint32_t vd, uint32_t ra, uint32_t rb) {
   Value* ea = CalculateEA_0(f, ra, rb);
   Value* eb = f.And(f.Truncate(ea, INT8_TYPE), f.LoadConstant((int8_t)0xF));
-  // ea &= ~0xF (load takes care of this)
+  // ea &= ~0xF
+  ea = f.And(ea, f.LoadConstant(~0xFull));
   // v = (new << eb)
   Value* v = f.Permute(
       f.LoadVectorShl(eb),
@@ -272,7 +270,8 @@ XEEMITTER(lvlxl128,       VX128_1(4, 1539), VX128_1)(PPCHIRBuilder& f, InstrData
 int InstrEmit_lvrx_(PPCHIRBuilder& f, InstrData& i, uint32_t vd, uint32_t ra, uint32_t rb) {
   Value* ea = CalculateEA_0(f, ra, rb);
   Value* eb = f.And(f.Truncate(ea, INT8_TYPE), f.LoadConstant((int8_t)0xF));
-  // ea &= ~0xF (load takes care of this)
+  // ea &= ~0xF
+  ea = f.And(ea, f.LoadConstant(~0xFull));
   // v = (new >> (16 - eb))
   Value* v = f.Permute(
       f.LoadVectorShr(f.Sub(f.LoadConstant((int8_t)16), eb)),
@@ -301,7 +300,8 @@ int InstrEmit_stvlx_(PPCHIRBuilder& f, InstrData& i, uint32_t vd, uint32_t ra, u
   Value* ea = CalculateEA_0(f, ra, rb);
   Value* eb = f.And(f.Truncate(ea, INT8_TYPE), f.LoadConstant((int8_t)0xF));
   Value* new_value = f.LoadVR(vd);
-  // ea &= ~0xF (load takes care of this)
+  // ea &= ~0xF
+  ea = f.And(ea, f.LoadConstant(~0xFull));
   Value* old_value = f.ByteSwap(f.Load(ea, VEC128_TYPE));
   // v = (new >> eb) | (old & (ONE << (16 - eb)))
   Value* v = f.Permute(
@@ -318,7 +318,7 @@ int InstrEmit_stvlx_(PPCHIRBuilder& f, InstrData& i, uint32_t vd, uint32_t ra, u
               f.Not(f.LoadZero(VEC128_TYPE)),
               f.LoadZero(VEC128_TYPE),
               INT8_TYPE)));
-  // ea &= ~0xF (store takes care of this)
+  // ea &= ~0xF (handled above)
   f.Store(ea, f.ByteSwap(v));
   return 0;
 }
@@ -341,7 +341,8 @@ int InstrEmit_stvrx_(PPCHIRBuilder& f, InstrData& i, uint32_t vd, uint32_t ra, u
   Value* ea = CalculateEA_0(f, ra, rb);
   Value* eb = f.And(f.Truncate(ea, INT8_TYPE), f.LoadConstant((int8_t)0xF));
   Value* new_value = f.LoadVR(vd);
-  // ea &= ~0xF (load takes care of this)
+  // ea &= ~0xF
+  ea = f.And(ea, f.LoadConstant(~0xFull));
   Value* old_value = f.ByteSwap(f.Load(ea, VEC128_TYPE));
   // v = (new << (16 - eb)) | (old & (ONE >> eb))
   Value* v = f.Permute(
@@ -358,7 +359,7 @@ int InstrEmit_stvrx_(PPCHIRBuilder& f, InstrData& i, uint32_t vd, uint32_t ra, u
               f.LoadZero(VEC128_TYPE),
               f.Not(f.LoadZero(VEC128_TYPE)),
               INT8_TYPE)));
-  // ea &= ~0xF (store takes care of this)
+  // ea &= ~0xF (handled above)
   f.Store(ea, f.ByteSwap(v));
   return 0;
 }
@@ -404,48 +405,75 @@ XEEMITTER(vaddfp128,      VX128(5, 16),     VX128  )(PPCHIRBuilder& f, InstrData
 }
 
 XEEMITTER(vaddsbs,        0x10000300, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  Value* v = f.VectorAdd(f.LoadVR(i.VX.VA), f.LoadVR(i.VX.VB),
+                         INT8_TYPE, ARITHMETIC_SATURATE);
+  f.StoreSAT(f.DidSaturate(v));
+  f.StoreVR(i.VX.VD, v);
+  return 0;
 }
 
 XEEMITTER(vaddshs,        0x10000340, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  Value* v = f.VectorAdd(f.LoadVR(i.VX.VA), f.LoadVR(i.VX.VB),
+                         INT16_TYPE, ARITHMETIC_SATURATE);
+  f.StoreSAT(f.DidSaturate(v));
+  f.StoreVR(i.VX.VD, v);
+  return 0;
 }
 
 XEEMITTER(vaddsws,        0x10000380, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  Value* v = f.VectorAdd(f.LoadVR(i.VX.VA), f.LoadVR(i.VX.VB),
+                         INT32_TYPE, ARITHMETIC_SATURATE);
+  f.StoreSAT(f.DidSaturate(v));
+  f.StoreVR(i.VX.VD, v);
+  return 0;
 }
 
 XEEMITTER(vaddubm,        0x10000000, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  Value* v = f.VectorAdd(f.LoadVR(i.VX.VA), f.LoadVR(i.VX.VB),
+                         INT8_TYPE, ARITHMETIC_UNSIGNED);
+  f.StoreSAT(f.DidSaturate(v));
+  f.StoreVR(i.VX.VD, v);
+  return 0;
 }
 
 XEEMITTER(vaddubs,        0x10000200, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  Value* v = f.VectorAdd(f.LoadVR(i.VX.VA), f.LoadVR(i.VX.VB),
+                         INT8_TYPE, ARITHMETIC_UNSIGNED | ARITHMETIC_SATURATE);
+  f.StoreSAT(f.DidSaturate(v));
+  f.StoreVR(i.VX.VD, v);
+  return 0;
 }
 
 XEEMITTER(vadduhm,        0x10000040, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  Value* v = f.VectorAdd(f.LoadVR(i.VX.VA), f.LoadVR(i.VX.VB),
+                         INT16_TYPE, ARITHMETIC_UNSIGNED);
+  f.StoreSAT(f.DidSaturate(v));
+  f.StoreVR(i.VX.VD, v);
+  return 0;
 }
 
 XEEMITTER(vadduhs,        0x10000240, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  Value* v = f.VectorAdd(f.LoadVR(i.VX.VA), f.LoadVR(i.VX.VB),
+                         INT16_TYPE, ARITHMETIC_UNSIGNED | ARITHMETIC_SATURATE);
+  f.StoreSAT(f.DidSaturate(v));
+  f.StoreVR(i.VX.VD, v);
+  return 0;
 }
 
 XEEMITTER(vadduwm,        0x10000080, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  Value* v = f.VectorAdd(f.LoadVR(i.VX.VA), f.LoadVR(i.VX.VB),
+                         INT32_TYPE, ARITHMETIC_UNSIGNED);
+  f.StoreSAT(f.DidSaturate(v));
+  f.StoreVR(i.VX.VD, v);
+  return 0;
 }
 
 XEEMITTER(vadduws,        0x10000280, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  Value* v = f.VectorAdd(f.LoadVR(i.VX.VA), f.LoadVR(i.VX.VB),
+                         INT32_TYPE, ARITHMETIC_UNSIGNED | ARITHMETIC_SATURATE);
+  f.StoreSAT(f.DidSaturate(v));
+  f.StoreVR(i.VX.VD, v);
+  return 0;
 }
 
 int InstrEmit_vand_(PPCHIRBuilder& f, uint32_t vd, uint32_t va, uint32_t vb) {
@@ -504,40 +532,70 @@ XEEMITTER(vavguw,         0x10000482, VX  )(PPCHIRBuilder& f, InstrData& i) {
   return 1;
 }
 
-XEEMITTER(vcfsx,          0x1000034A, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-
-XEEMITTER(vcsxwfp128,     VX128_3(6, 688),  VX128_3)(PPCHIRBuilder& f, InstrData& i) {
-  // (VD) <- float(VB) / 2^uimm
-  uint32_t uimm = VX128_3_IMM;
+int InstrEmit_vcfsx_(PPCHIRBuilder& f, uint32_t vd, uint32_t vb, uint32_t uimm) {
+  // (VD) <- float(VB as signed) / 2^uimm
   uimm = uimm ? (2 << (uimm - 1)) : 1;
   Value* v = f.Div(
-      f.VectorConvertI2F(f.LoadVR(VX128_3_VB128)),
+      f.VectorConvertI2F(f.LoadVR(vb)),
       f.Splat(f.LoadConstant((float)uimm), VEC128_TYPE));
-  f.StoreVR(VX128_3_VD128, v);
+  f.StoreVR(vd, v);
   return 0;
 }
-
-XEEMITTER(vcfpsxws128,    VX128_3(6, 560),  VX128_3)(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+XEEMITTER(vcfsx,          0x1000034A, VX  )(PPCHIRBuilder& f, InstrData& i) {
+  return InstrEmit_vcfsx_(f, i.VX.VD, i.VX.VB, i.VX.VA);
+}
+XEEMITTER(vcsxwfp128,     VX128_3(6, 688),  VX128_3)(PPCHIRBuilder& f, InstrData& i) {
+  return InstrEmit_vcfsx_(f, VX128_3_VD128, VX128_3_VB128, VX128_3_IMM);
 }
 
+int InstrEmit_vcfux_(PPCHIRBuilder& f, uint32_t vd, uint32_t vb, uint32_t uimm) {
+  // (VD) <- float(VB as unsigned) / 2^uimm
+  uimm = uimm ? (2 << (uimm - 1)) : 1;
+  Value* v = f.Div(
+      f.VectorConvertI2F(f.LoadVR(vb), ARITHMETIC_UNSIGNED),
+      f.Splat(f.LoadConstant((float)uimm), VEC128_TYPE));
+  f.StoreVR(vd, v);
+  return 0;
+}
 XEEMITTER(vcfux,          0x1000030A, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  return InstrEmit_vcfux_(f, i.VX.VD, i.VX.VB, i.VX.VA);
 }
-
 XEEMITTER(vcuxwfp128,     VX128_3(6, 752),  VX128_3)(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  return InstrEmit_vcfux_(f, VX128_3_VD128, VX128_3_VB128, VX128_3_IMM);
 }
 
+int InstrEmit_vctsxs_(PPCHIRBuilder& f, uint32_t vd, uint32_t vb, uint32_t uimm) {
+  // (VD) <- int_sat(VB as signed * 2^uimm)
+  uimm = uimm ? (2 << (uimm - 1)) : 1;
+  Value* v = f.Mul(
+      f.LoadVR(vb),
+      f.Splat(f.LoadConstant((float)uimm), VEC128_TYPE));
+  v = f.VectorConvertF2I(v, ARITHMETIC_SATURATE);
+  f.StoreVR(vd, v);
+  return 0;
+}
+XEEMITTER(vctsxs,         0x100003CA, VX  )(PPCHIRBuilder& f, InstrData& i) {
+  return InstrEmit_vctsxs_(f, i.VX.VD, i.VX.VB, i.VX.VA);
+}
+XEEMITTER(vcfpsxws128,    VX128_3(6, 560),  VX128_3)(PPCHIRBuilder& f, InstrData& i) {
+  return InstrEmit_vctsxs_(f, VX128_3_VD128, VX128_3_VB128, VX128_3_IMM);
+}
+
+int InstrEmit_vctuxs_(PPCHIRBuilder& f, uint32_t vd, uint32_t vb, uint32_t uimm) {
+  // (VD) <- int_sat(VB as unsigned * 2^uimm)
+  uimm = uimm ? (2 << (uimm - 1)) : 1;
+  Value* v = f.Mul(
+      f.LoadVR(vb),
+      f.Splat(f.LoadConstant((float)uimm), VEC128_TYPE));
+  v = f.VectorConvertF2I(v, ARITHMETIC_UNSIGNED | ARITHMETIC_SATURATE);
+  f.StoreVR(vd, v);
+  return 0;
+}
+XEEMITTER(vctuxs,         0x1000038A, VX  )(PPCHIRBuilder& f, InstrData& i) {
+  return InstrEmit_vctuxs_(f, i.VX.VD, i.VX.VB, i.VX.VA);
+}
 XEEMITTER(vcfpuxws128,    VX128_3(6, 624),  VX128_3)(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  return InstrEmit_vctuxs_(f, VX128_3_VD128, VX128_3_VB128, VX128_3_IMM);
 }
 
 int InstrEmit_vcmpbfp_(PPCHIRBuilder& f, InstrData& i, uint32_t vd, uint32_t va, uint32_t vb, uint32_t rc) {
@@ -573,7 +631,7 @@ int InstrEmit_vcmpxxfp_(PPCHIRBuilder& f, InstrData& i, vcmpxxfp_op cmpop, uint3
     break;
   default:
     XEASSERTALWAYS();
-    break;
+    return 1;
   }
   if (rc) {
     f.UpdateCR6(v);
@@ -691,16 +749,6 @@ XEEMITTER(vcmpgtuh,       0x10000246, VXR )(PPCHIRBuilder& f, InstrData& i) {
 }
 XEEMITTER(vcmpgtuw,       0x10000286, VXR )(PPCHIRBuilder& f, InstrData& i) {
   return InstrEmit_vcmpxxi_(f, i, vcmpxxi_gt_unsigned, 4, i.VXR.VD, i.VXR.VA, i.VXR.VB, i.VXR.Rc);
-}
-
-XEEMITTER(vctsxs,         0x100003CA, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-
-XEEMITTER(vctuxs,         0x1000038A, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
 }
 
 int InstrEmit_vexptefp_(PPCHIRBuilder& f, uint32_t vd, uint32_t vb) {
@@ -1081,88 +1129,6 @@ XEEMITTER(vpermwi128,     VX128_P(6, 528),  VX128_P)(PPCHIRBuilder& f, InstrData
   return 0;
 }
 
-XEEMITTER(vpkpx,          0x1000030E, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-
-XEEMITTER(vpkshss,        0x1000018E, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-XEEMITTER(vpkshss128,     VX128(5, 512),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-
-XEEMITTER(vpkswss,        0x100001CE, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-XEEMITTER(vpkswss128,     VX128(5, 640),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-
-XEEMITTER(vpkswus,        0x1000014E, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-XEEMITTER(vpkswus128,     VX128(5, 704),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-
-XEEMITTER(vpkuhum,        0x1000000E, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-XEEMITTER(vpkuhum128,     VX128(5, 768),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-
-XEEMITTER(vpkuhus,        0x1000008E, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-XEEMITTER(vpkuhus128,     VX128(5, 832),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-
-XEEMITTER(vpkshus,        0x1000010E, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-XEEMITTER(vpkshus128,     VX128(5, 576),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-
-XEEMITTER(vpkuwum,        0x1000004E, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-XEEMITTER(vpkuwum128,     VX128(5, 896),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-
-XEEMITTER(vpkuwus,        0x100000CE, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-XEEMITTER(vpkuwus128,     VX128(5, 960),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-
-XEEMITTER(vpkd3d128,      VX128_4(6, 1552), VX128_4)(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-
 int InstrEmit_vrefp_(PPCHIRBuilder& f, uint32_t vd, uint32_t vb) {
   // (VD) <- 1/(VB)
   vec128_t one = { 1, 1, 1, 1 };
@@ -1177,13 +1143,17 @@ XEEMITTER(vrefp128,       VX128_3(6, 1584), VX128_3)(PPCHIRBuilder& f, InstrData
   return InstrEmit_vrefp_(f, VX128_3_VD128, VX128_3_VB128);
 }
 
+int InstrEmit_vrfim_(PPCHIRBuilder& f, uint32_t vd, uint32_t vb) {
+  // (VD) <- RndToFPInt32Floor(VB)
+  Value* v = f.Round(f.LoadVR(vb), ROUND_TO_MINUS_INFINITY);
+  f.StoreVR(vd, v);
+  return 0;
+}
 XEEMITTER(vrfim,          0x100002CA, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  return InstrEmit_vrfim_(f, i.VX.VD, i.VX.VB);
 }
 XEEMITTER(vrfim128,       VX128_3(6, 816),  VX128_3)(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  return InstrEmit_vrfim_(f, VX128_3_VD128, VX128_3_VB128);
 }
 
 int InstrEmit_vrfin_(PPCHIRBuilder& f, uint32_t vd, uint32_t vb) {
@@ -1199,22 +1169,30 @@ XEEMITTER(vrfin128,       VX128_3(6, 880),  VX128_3)(PPCHIRBuilder& f, InstrData
   return InstrEmit_vrfin_(f, VX128_3_VD128, VX128_3_VB128);
 }
 
+int InstrEmit_vrfip_(PPCHIRBuilder& f, uint32_t vd, uint32_t vb) {
+  // (VD) <- RndToFPInt32Ceil(VB)
+  Value* v = f.Round(f.LoadVR(vb), ROUND_TO_POSITIVE_INFINITY);
+  f.StoreVR(vd, v);
+  return 0;
+}
 XEEMITTER(vrfip,          0x1000028A, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  return InstrEmit_vrfip_(f, i.VX.VD, i.VX.VB);
 }
 XEEMITTER(vrfip128,       VX128_3(6, 944),  VX128_3)(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  return InstrEmit_vrfip_(f, VX128_3_VD128, VX128_3_VB128);
 }
 
+int InstrEmit_vrfiz_(PPCHIRBuilder& f, uint32_t vd, uint32_t vb) {
+  // (VD) <- RndToFPInt32Trunc(VB)
+  Value* v = f.Round(f.LoadVR(vb), ROUND_TO_ZERO);
+  f.StoreVR(vd, v);
+  return 0;
+}
 XEEMITTER(vrfiz,          0x1000024A, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  return InstrEmit_vrfiz_(f, i.VX.VD, i.VX.VB);
 }
 XEEMITTER(vrfiz128,       VX128_3(6, 1008), VX128_3)(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  return InstrEmit_vrfiz_(f, VX128_3_VD128, VX128_3_VB128);
 }
 
 XEEMITTER(vrlb,           0x10000004, VX  )(PPCHIRBuilder& f, InstrData& i) {
@@ -1373,7 +1351,9 @@ int InstrEmit_vsldoi_(PPCHIRBuilder& f, uint32_t vd, uint32_t va, uint32_t vb, u
   // vsldoi128 vr63,vr63,vr63,4
   // (ABCD ABCD) << 4b = (BCDA)
   // (VA << SH) OR (VB >> (16 - SH))
-  Value* control = f.LoadConstant(*((vec128_t*)(__vsldoi_table[sh])));
+  vec128_t shift = *((vec128_t*)(__vsldoi_table[sh]));
+  for (int i = 0; i < 4; ++i) shift.i4[i] = XESWAP32BE(shift.i4[i]);
+  Value* control = f.LoadConstant(shift);
   Value* v = f.Permute(
       control,
       f.LoadVR(va),
@@ -1637,21 +1617,84 @@ XEEMITTER(vsum4ubs,       0x10000608, VX  )(PPCHIRBuilder& f, InstrData& i) {
   return 1;
 }
 
+XEEMITTER(vpkpx,          0x1000030E, VX  )(PPCHIRBuilder& f, InstrData& i) {
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
+}
+
+XEEMITTER(vpkshss,        0x1000018E, VX  )(PPCHIRBuilder& f, InstrData& i) {
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
+}
+XEEMITTER(vpkshss128,     VX128(5, 512),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
+}
+
+XEEMITTER(vpkswss,        0x100001CE, VX  )(PPCHIRBuilder& f, InstrData& i) {
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
+}
+XEEMITTER(vpkswss128,     VX128(5, 640),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
+}
+
+XEEMITTER(vpkswus,        0x1000014E, VX  )(PPCHIRBuilder& f, InstrData& i) {
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
+}
+XEEMITTER(vpkswus128,     VX128(5, 704),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
+}
+
+XEEMITTER(vpkuhum,        0x1000000E, VX  )(PPCHIRBuilder& f, InstrData& i) {
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
+}
+XEEMITTER(vpkuhum128,     VX128(5, 768),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
+}
+
+XEEMITTER(vpkuhus,        0x1000008E, VX  )(PPCHIRBuilder& f, InstrData& i) {
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
+}
+XEEMITTER(vpkuhus128,     VX128(5, 832),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
+}
+
+XEEMITTER(vpkshus,        0x1000010E, VX  )(PPCHIRBuilder& f, InstrData& i) {
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
+}
+XEEMITTER(vpkshus128,     VX128(5, 576),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
+}
+
+XEEMITTER(vpkuwum,        0x1000004E, VX  )(PPCHIRBuilder& f, InstrData& i) {
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
+}
+XEEMITTER(vpkuwum128,     VX128(5, 896),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
+}
+
+XEEMITTER(vpkuwus,        0x100000CE, VX  )(PPCHIRBuilder& f, InstrData& i) {
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
+}
+XEEMITTER(vpkuwus128,     VX128(5, 960),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
+}
+
 XEEMITTER(vupkhpx,        0x1000034E, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-
-XEEMITTER(vupkhsb,        0x1000020E, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-XEEMITTER(vupkhsb128,     VX128(6, 896),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
-}
-
-XEEMITTER(vupkhsh,        0x1000024E, VX  )(PPCHIRBuilder& f, InstrData& i) {
   XEINSTRNOTIMPLEMENTED();
   return 1;
 }
@@ -1661,45 +1704,135 @@ XEEMITTER(vupklpx,        0x100003CE, VX  )(PPCHIRBuilder& f, InstrData& i) {
   return 1;
 }
 
+int InstrEmit_vupkhsh_(PPCHIRBuilder& f, uint32_t vd, uint32_t vb) {
+  // halfwords 0-3 expanded to words 0-3 and sign extended
+  Value* v = f.Unpack(f.LoadVR(vb), PACK_TYPE_S16_IN_32_HI);
+  f.StoreVR(vd, v);
+  return 0;
+}
+XEEMITTER(vupkhsh,        0x1000024E, VX  )(PPCHIRBuilder& f, InstrData& i) {
+  return InstrEmit_vupkhsh_(f, i.VX.VD, i.VX.VB);
+}
+XEEMITTER(vupkhsh128,     0x100002CE, VX  )(PPCHIRBuilder& f, InstrData& i) {
+  uint32_t va = VX128_VA128;
+  XEASSERTZERO(va);
+  return InstrEmit_vupkhsh_(f, VX128_VD128, VX128_VB128);
+}
+
+int InstrEmit_vupklsh_(PPCHIRBuilder& f, uint32_t vd, uint32_t vb) {
+  // halfwords 4-7 expanded to words 0-3 and sign extended
+  Value* v = f.Unpack(f.LoadVR(vb), PACK_TYPE_S16_IN_32_LO);
+  f.StoreVR(vd, v);
+  return 0;
+}
+XEEMITTER(vupklsh,        0x100002CE, VX  )(PPCHIRBuilder& f, InstrData& i) {
+  return InstrEmit_vupklsh_(f, i.VX.VD, i.VX.VB);
+}
+XEEMITTER(vupklsh128,     0x100002CE, VX  )(PPCHIRBuilder& f, InstrData& i) {
+  uint32_t va = VX128_VA128;
+  XEASSERTZERO(va);
+  return InstrEmit_vupklsh_(f, VX128_VD128, VX128_VB128);
+}
+
+int InstrEmit_vupkhsb_(PPCHIRBuilder& f, uint32_t vd, uint32_t vb) {
+  // bytes 0-7 expanded to halfwords 0-7 and sign extended
+  Value* v = f.Unpack(f.LoadVR(vb), PACK_TYPE_S8_IN_16_HI);
+  f.StoreVR(vd, v);
+  return 0;
+}
+XEEMITTER(vupkhsb,        0x1000020E, VX  )(PPCHIRBuilder& f, InstrData& i) {
+  return InstrEmit_vupkhsb_(f, i.VX.VD, i.VX.VB);
+}
+XEEMITTER(vupkhsb128,     VX128(6, 896),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
+  uint32_t va = VX128_VA128;
+  if (va == 0x60) {
+    // Hrm, my instruction tables suck.
+    return InstrEmit_vupkhsh_(f, VX128_VD128, VX128_VB128);
+  }
+  return InstrEmit_vupkhsb_(f, VX128_VD128, VX128_VB128);
+}
+
+int InstrEmit_vupklsb_(PPCHIRBuilder& f, uint32_t vd, uint32_t vb) {
+  // bytes 8-15 expanded to halfwords 0-7 and sign extended
+  Value* v = f.Unpack(f.LoadVR(vb), PACK_TYPE_S8_IN_16_LO);
+  f.StoreVR(vd, v);
+  return 0;
+}
 XEEMITTER(vupklsb,        0x1000028E, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  return InstrEmit_vupklsb_(f, i.VX.VD, i.VX.VB);
 }
 XEEMITTER(vupklsb128,     VX128(6, 960),    VX128  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  uint32_t va = VX128_VA128;
+  if (va == 0x60) {
+    // Hrm, my instruction tables suck.
+    return InstrEmit_vupklsh_(f, VX128_VD128, VX128_VB128);
+  }
+  return InstrEmit_vupklsb_(f, VX128_VD128, VX128_VB128);
 }
 
-XEEMITTER(vupklsh,        0x100002CE, VX  )(PPCHIRBuilder& f, InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+XEEMITTER(vpkd3d128,      VX128_4(6, 1552), VX128_4)(PPCHIRBuilder& f, InstrData& i) {
+  const uint32_t vd = i.VX128_4.VD128l | (i.VX128_4.VD128h << 5);
+  const uint32_t vb = i.VX128_4.VB128l | (i.VX128_4.VB128h << 5);
+  uint32_t type = i.VX128_4.IMM >> 2;
+  uint32_t shift = i.VX128_4.IMM & 0x3;
+  uint32_t pack = i.VX128_4.z;
+  Value* v = f.LoadVR(vb);
+  switch (type) {
+  case 0: // VPACK_D3DCOLOR
+    v = f.Pack(v, PACK_TYPE_D3DCOLOR);
+    break;
+  case 1: // VPACK_NORMSHORT2
+    v = f.Pack(v, PACK_TYPE_SHORT_2);
+    break;
+  case 3: // VPACK_... 2 FLOAT16s DXGI_FORMAT_R16G16_FLOAT
+    v = f.Pack(v, PACK_TYPE_FLOAT16_2);
+    break;
+  case 5: // VPACK_... 4 FLOAT16s DXGI_FORMAT_R16G16B16A16_FLOAT
+    v = f.Pack(v, PACK_TYPE_FLOAT16_4);
+    break;
+  default:
+    XEASSERTALWAYS();
+    return 1;
+  }
+  // http://hlssmod.net/he_code/public/pixelwriter.h
+  // control = prev:0123 | new:4567
+  uint32_t control = 0x00010203; // original
+  uint32_t src = _rotl(0x04050607, shift * 8);
+  uint32_t mask = 0;
+  switch (pack) {
+  case 1: // VPACK_32
+    // VPACK_32 & shift = 3 puts lower 32 bits in x (leftmost slot).
+    mask = 0x000000FF << (shift * 8);
+    control = (control & ~mask) | (src & mask);
+    break;
+  case 2: // 64bit
+    if (shift < 3) {
+      mask = 0x0000FFFF << (shift * 8);
+    } else {
+      // w
+      src = 0x00000007;
+      mask = 0x000000FF;
+    }
+    control = (control & ~mask) | (src & mask);
+    break;
+  case 3: // 64bit
+    if (shift < 3) {
+      mask = 0x0000FFFF << (shift * 8);
+    } else {
+      // z
+      src = 0x00000006;
+      mask = 0x000000FF;
+    }
+    control = (control & ~mask) | (src & mask);
+    break;
+  default:
+    XEASSERTALWAYS();
+    return 1;
+  }
+  v = f.Permute(f.LoadConstant(control), f.LoadVR(vd), v, INT32_TYPE);
+  f.StoreVR(vd, v);
+  return 0;
 }
-
-// __m128 half_to_float5_SSE2(__m128i h) {
-// #define SSE_CONST4(name, val) static const __declspec(align(16)) uint name[4] = { (val), (val), (val), (val) }
-// #define SSE_CONST(name) *(const __m128i *)&name
-// #define SSE_CONSTF(name) *(const __m128 *)&name
-//     SSE_CONST4(mask_nosign,         0x7fff);
-//     SSE_CONST4(magic,               (254 - 15) << 23);
-//     SSE_CONST4(was_infnan,          0x7bff);
-//     SSE_CONST4(exp_infnan,          255 << 23);
-//     __m128i mnosign     = SSE_CONST(mask_nosign);
-//     __m128i expmant     = _mm_and_si128(mnosign, h);
-//     __m128i justsign    = _mm_xor_si128(h, expmant);
-//     __m128i expmant2    = expmant; // copy (just here for counting purposes)
-//     __m128i shifted     = _mm_slli_epi32(expmant, 13);
-//     __m128  scaled      = _mm_mul_ps(_mm_castsi128_ps(shifted), *(const __m128 *)&magic);
-//     __m128i b_wasinfnan = _mm_cmpgt_epi32(expmant2, SSE_CONST(was_infnan));
-//     __m128i sign        = _mm_slli_epi32(justsign, 16);
-//     __m128  infnanexp   = _mm_and_ps(_mm_castsi128_ps(b_wasinfnan), SSE_CONSTF(exp_infnan));
-//     __m128  sign_inf    = _mm_or_ps(_mm_castsi128_ps(sign), infnanexp);
-//     __m128  final       = _mm_or_ps(scaled, sign_inf);
-//     // ~11 SSE2 ops.
-//     return final;
-// #undef SSE_CONST4
-// #undef CONST
-// #undef CONSTF
-// }
 
 XEEMITTER(vupkd3d128,     VX128_3(6, 2032), VX128_3)(PPCHIRBuilder& f, InstrData& i) {
   // Can't find many docs on this. Best reference is
@@ -1709,86 +1842,19 @@ XEEMITTER(vupkd3d128,     VX128_3(6, 2032), VX128_3)(PPCHIRBuilder& f, InstrData
   const uint32_t vd = i.VX128_3.VD128l | (i.VX128_3.VD128h << 5);
   const uint32_t vb = i.VX128_3.VB128l | (i.VX128_3.VB128h << 5);
   const uint32_t type = i.VX128_3.IMM >> 2;
-  Value* v;
+  Value* v = f.LoadVR(vb);
   switch (type) {
   case 0: // VPACK_D3DCOLOR
-    {
-      // http://hlssmod.net/he_code/public/pixelwriter.h
-      // ARGB (WXYZ) -> RGBA (XYZW)
-      // zzzzZZZZzzzzARGB
-      v = f.LoadVR(vb);
-      // 0zzzZZZZzzzzARGB
-      v = f.Insert(v, 0ull, f.LoadConstant((int8_t)0));
-      // 000R000G000B000A
-      vec128_t shuf_v = { 0 };
-      shuf_v.b16[3] = 13;
-      shuf_v.b16[7] = 14;
-      shuf_v.b16[11] = 15;
-      shuf_v.b16[15] = 12;
-      Value* shuf = f.LoadConstant(shuf_v);
-      v = f.Permute(shuf, v, v, INT8_TYPE);
-      // {256*R.0, 256*G.0, 256*B.0, 256*A.0}
-      v = f.VectorConvertI2F(v);
-      // {R.0, G.0, B.0 A.0}
-      // 1/256 = 0.00390625 = 0x3B800000
-      v = f.Mul(
-          v,
-          f.Splat(f.LoadConstant((uint32_t)0x3B800000), VEC128_TYPE));
-    }
+    v = f.Unpack(v, PACK_TYPE_D3DCOLOR);
     break;
   case 1: // VPACK_NORMSHORT2
-    {
-      // (VD.x) = 3.0 + (VB.x)*2^-22
-      // (VD.y) = 3.0 + (VB.y)*2^-22
-      // (VD.z) = 0.0
-      // (VD.w) = 1.0
-      // v = VB.x|VB.y|0|0
-      v = f.Permute(
-          f.LoadConstant(PERMUTE_XY_ZW),
-          f.LoadVR(vb),
-          f.LoadZero(VEC128_TYPE),
-          INT32_TYPE);
-      // *= 2^-22 + {3.0, 3.0, 0, 1.0}
-      vec128_t v3301 = { 3.0, 3.0, 0, 1.0 };
-      v = f.MulAdd(
-          v,
-          f.Splat(f.LoadConstant(0x34800000), VEC128_TYPE),
-          f.LoadConstant(v3301));
-    }
+    v = f.Unpack(v, PACK_TYPE_SHORT_2);
     break;
-  case 3: // VPACK_... 2 FLOAT16s
-    {
-      // (VD.x) = fixed_16_to_32(VB.x (low))
-      // (VD.y) = fixed_16_to_32(VB.x (high))
-      // (VD.z) = 0.0
-      // (VD.w) = 1.0
-      v = f.LoadZero(VEC128_TYPE);
-      f.DebugBreak();
-      // 1 bit sign, 5 bit exponent, 10 bit mantissa
-      // D3D10 half float format
-      // TODO(benvanik): fixed_16_to_32 in SSE?
-      // TODO(benvanik): http://blogs.msdn.com/b/chuckw/archive/2012/09/11/directxmath-f16c-and-fma.aspx
-      // Use _mm_cvtph_ps -- requires very modern processors (SSE5+)
-      // Unpacking half floats: http://fgiesen.wordpress.com/2012/03/28/half-to-float-done-quic/
-      // Packing half floats: https://gist.github.com/rygorous/2156668
-      // Load source, move from tight pack of X16Y16.... to X16...Y16...
-      // Also zero out the high end.
-      //c.int3();
-      //c.movaps(vt, f.LoadVR(vb));
-      //c.save(vt);
-      //c.lea(gt, vt.m128());
-      //X86CompilerFuncCall* call = c.call(half_to_float5_SSE2);
-      //uint32_t args[] = {kX86VarTypeGpq};
-      //call->setPrototype(kX86FuncConvDefault, kX86VarTypeXmm, args, XECOUNT(args));
-      //call->setArgument(0, gt);
-      //call->setReturn(v);
-      //// Select XY00.
-      //c.xorps(vt, vt);
-      //c.shufps(v, vt, imm(0x04));
-      //// {0.0, 0.0, 0.0, 1.0}
-      //c.mov(gt, imm(0x3F800000));
-      //c.pinsrd(v, gt.r32(), imm(3));
-    }
+  case 3: // VPACK_... 2 FLOAT16s DXGI_FORMAT_R16G16_FLOAT
+    v = f.Unpack(v, PACK_TYPE_FLOAT16_2);
+    break;
+  case 5: // VPACK_... 4 FLOAT16s DXGI_FORMAT_R16G16B16A16_FLOAT
+    v = f.Unpack(v, PACK_TYPE_FLOAT16_4);
     break;
   default:
     XEASSERTALWAYS();

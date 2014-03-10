@@ -5,6 +5,7 @@
     'third_party/beaengine.gypi',
     'third_party/gflags.gypi',
     'third_party/jansson.gypi',
+    'third_party/llvm.gypi',
     'third_party/sparsehash.gypi',
     'third_party/wslay.gypi',
   ],
@@ -187,10 +188,12 @@
       'dependencies': [
         'beaengine',
         'gflags',
+        'llvm',
       ],
       'export_dependent_settings': [
         'beaengine',
         'gflags',
+        'llvm',
       ],
 
       'direct_dependent_settings': {
@@ -284,6 +287,8 @@
                   'd3d11',
                   'd3dcompiler',
                   'xinput',
+                  'xaudio2',
+                  'Shell32',
                 ],
               }],
               ['OS == "mac"', {

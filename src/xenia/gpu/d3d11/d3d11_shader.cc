@@ -10,6 +10,7 @@
 #include <xenia/gpu/d3d11/d3d11_shader.h>
 
 #include <xenia/gpu/gpu-private.h>
+#include <xenia/gpu/d3d11/d3d11_geometry_shader.h>
 #include <xenia/gpu/xenos/ucode.h>
 
 #include <d3dcompiler.h>
@@ -23,9 +24,76 @@ using namespace xe::gpu::xenos;
 
 namespace {
 
-const uint32_t MAX_INTERPOLATORS = 16;
-
 const int OUTPUT_CAPACITY = 64 * 1024;
+
+int GetFormatComponentCount(uint32_t format) {
+  switch (format) {
+  case FMT_32:
+  case FMT_32_FLOAT:
+    return 1;
+  case FMT_16_16:
+  case FMT_16_16_FLOAT:
+  case FMT_32_32:
+  case FMT_32_32_FLOAT:
+    return 2;
+  case FMT_10_11_11:
+  case FMT_11_11_10:
+  case FMT_32_32_32_FLOAT:
+    return 3;
+  case FMT_8_8_8_8:
+  case FMT_2_10_10_10:
+  case FMT_16_16_16_16:
+  case FMT_16_16_16_16_FLOAT:
+  case FMT_32_32_32_32:
+  case FMT_32_32_32_32_FLOAT:
+    return 4;
+  default:
+    XELOGE("Unknown vertex format: %d", format);
+    XEASSERTALWAYS();
+    return 4;
+  }
+}
+
+const char* GetFormatTypeName(
+    uint32_t format, uint32_t format_comp_all, uint32_t num_format_all) {
+  switch (format) {
+  case FMT_32:
+    return format_comp_all ? "int" : "uint";
+  case FMT_32_FLOAT:
+    return "float";
+  case FMT_16_16:
+  case FMT_32_32:
+    if (!num_format_all) {
+      return format_comp_all ? "snorm float2" : "unorm float2";
+    } else {
+      return format_comp_all ? "int2" : "uint2";
+    }
+  case FMT_16_16_FLOAT:
+  case FMT_32_32_FLOAT:
+    return "float2";
+  case FMT_10_11_11:
+  case FMT_11_11_10:
+    return "int3"; // ?
+  case FMT_32_32_32_FLOAT:
+    return "float3";
+  case FMT_8_8_8_8:
+  case FMT_2_10_10_10:
+  case FMT_16_16_16_16:
+  case FMT_32_32_32_32:
+    if (!num_format_all) {
+      return format_comp_all ? "snorm float4" : "unorm float4";
+    } else {
+      return format_comp_all ? "int4" : "uint4";
+    }
+  case FMT_16_16_16_16_FLOAT:
+  case FMT_32_32_32_32_FLOAT:
+    return "float4";
+  default:
+    XELOGE("Unknown vertex format: %d", format);
+    XEASSERTALWAYS();
+    return "float4";
+  }
+}
 
 }  // anonymous namespace
 
@@ -133,6 +201,41 @@ ID3D10Blob* D3D11Shader::Compile(const char* shader_source) {
   return shader_blob;
 }
 
+void D3D11Shader::AppendTextureHeader(Output* output) {
+  bool fetch_setup[32] = { false };
+
+  // 1 texture per constant slot, 1 sampler per fetch.
+  for (uint32_t  n = 0; n < tex_buffer_inputs_.count; n++) {
+    auto& input = tex_buffer_inputs_.descs[n];
+    auto& fetch = input.tex_fetch;
+
+    // Add texture, if needed.
+    if (!fetch_setup[fetch.const_idx]) {
+      fetch_setup[fetch.const_idx] = true;
+      const char* texture_type = NULL;
+      switch (fetch.dimension) {
+      case DIMENSION_1D:
+        texture_type = "Texture1D";
+        break;
+      default:
+      case DIMENSION_2D:
+        texture_type = "Texture2D";
+        break;
+      case DIMENSION_3D:
+        texture_type = "Texture3D";
+        break;
+      case DIMENSION_CUBE:
+        texture_type = "TextureCube";
+        break;
+      }
+      output->append("%s x_texture_%d;\n", texture_type, fetch.const_idx);
+    }
+
+    // Add sampler.
+    output->append("SamplerState x_sampler_%d;\n", n);
+  }
+}
+
 
 D3D11VertexShader::D3D11VertexShader(
     ID3D11Device* device,
@@ -141,9 +244,13 @@ D3D11VertexShader::D3D11VertexShader(
     handle_(0), input_layout_(0),
     D3D11Shader(device, XE_GPU_SHADER_TYPE_VERTEX,
                 src_ptr, length, hash) {
+  xe_zero_struct(geometry_shaders_, sizeof(geometry_shaders_));
 }
 
 D3D11VertexShader::~D3D11VertexShader() {
+  for (size_t n = 0; n < XECOUNT(geometry_shaders_); n++) {
+    delete geometry_shaders_[n];
+  }
   XESAFERELEASE(input_layout_);
   XESAFERELEASE(handle_);
 }
@@ -184,119 +291,107 @@ int D3D11VertexShader::Prepare(xe_gpu_program_cntl_t* program_cntl) {
   }
 
   // Create input layout.
-  size_t element_count = fetch_vtxs_.size();
+  size_t element_count = 0;
+  for (uint32_t n = 0; n < vtx_buffer_inputs_.count; n++) {
+    element_count += vtx_buffer_inputs_.descs[n].element_count;
+  }
+  if (!element_count) {
+    XELOGW("D3D11: vertex shader with zero inputs -- retaining previous values?");
+    input_layout_ = NULL;
+    return 0;
+  }
+
   D3D11_INPUT_ELEMENT_DESC* element_descs =
       (D3D11_INPUT_ELEMENT_DESC*)xe_alloca(
           sizeof(D3D11_INPUT_ELEMENT_DESC) * element_count);
-  int n = 0;
-  for (std::vector<instr_fetch_vtx_t>::iterator it = fetch_vtxs_.begin();
-       it != fetch_vtxs_.end(); ++it, ++n) {
-    const instr_fetch_vtx_t& vtx = *it;
-    DXGI_FORMAT vtx_format;
-    switch (vtx.format) {
-    case FMT_1_REVERSE:
-      vtx_format = DXGI_FORMAT_R1_UNORM; // ?
-      break;
-    case FMT_8:
-      if (!vtx.num_format_all) {
-        vtx_format = vtx.format_comp_all ?
-            DXGI_FORMAT_R8_SNORM : DXGI_FORMAT_R8_UNORM;
-      } else {
-        vtx_format = vtx.format_comp_all ?
-            DXGI_FORMAT_R8_SINT : DXGI_FORMAT_R8_UINT;
+  uint32_t el_index = 0;
+  for (uint32_t n = 0; n < vtx_buffer_inputs_.count; n++) {
+    auto& input = vtx_buffer_inputs_.descs[n];
+    for (uint32_t m = 0; m < input.element_count; m++) {
+      auto& el = input.elements[m];
+      uint32_t vb_slot = input.input_index;
+      uint32_t num_format_all = el.vtx_fetch.num_format_all;
+      uint32_t format_comp_all = el.vtx_fetch.format_comp_all;
+      DXGI_FORMAT vtx_format;
+      switch (el.format) {
+      case FMT_8_8_8_8:
+        if (!num_format_all) {
+          vtx_format = format_comp_all ?
+              DXGI_FORMAT_R8G8B8A8_SNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
+        } else {
+          vtx_format = format_comp_all ?
+              DXGI_FORMAT_R8G8B8A8_SINT : DXGI_FORMAT_R8G8B8A8_UINT;
+        }
+        break;
+      case FMT_2_10_10_10:
+        if (!num_format_all) {
+          vtx_format = DXGI_FORMAT_R10G10B10A2_UNORM;
+        } else {
+          vtx_format = DXGI_FORMAT_R10G10B10A2_UINT;
+        }
+        break;
+      // DXGI_FORMAT_R11G11B10_FLOAT?
+      case FMT_16_16:
+        if (!num_format_all) {
+          vtx_format = format_comp_all ?
+              DXGI_FORMAT_R16G16_SNORM : DXGI_FORMAT_R16G16_UNORM;
+        } else {
+          vtx_format = format_comp_all ?
+              DXGI_FORMAT_R16G16_SINT : DXGI_FORMAT_R16G16_UINT;
+        }
+        break;
+      case FMT_16_16_16_16:
+        if (!num_format_all) {
+          vtx_format = format_comp_all ?
+              DXGI_FORMAT_R16G16B16A16_SNORM : DXGI_FORMAT_R16G16B16A16_UNORM;
+        } else {
+          vtx_format = format_comp_all ?
+              DXGI_FORMAT_R16G16B16A16_SINT : DXGI_FORMAT_R16G16B16A16_UINT;
+        }
+        break;
+      case FMT_16_16_FLOAT:
+        vtx_format = DXGI_FORMAT_R16G16_FLOAT;
+        break;
+      case FMT_16_16_16_16_FLOAT:
+        vtx_format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        break;
+      case FMT_32:
+        vtx_format = format_comp_all ?
+            DXGI_FORMAT_R32_SINT : DXGI_FORMAT_R32_UINT;
+        break;
+      case FMT_32_32:
+        vtx_format = format_comp_all ?
+            DXGI_FORMAT_R32G32_SINT : DXGI_FORMAT_R32G32_UINT;
+        break;
+      case FMT_32_32_32_32:
+        vtx_format = format_comp_all ?
+            DXGI_FORMAT_R32G32B32A32_SINT : DXGI_FORMAT_R32G32B32A32_UINT;
+        break;
+      case FMT_32_FLOAT:
+        vtx_format = DXGI_FORMAT_R32_FLOAT;
+        break;
+      case FMT_32_32_FLOAT:
+        vtx_format = DXGI_FORMAT_R32G32_FLOAT;
+        break;
+      case FMT_32_32_32_FLOAT:
+        vtx_format = DXGI_FORMAT_R32G32B32_FLOAT;
+        break;
+      case FMT_32_32_32_32_FLOAT:
+        vtx_format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+        break;
+      default:
+        XEASSERTALWAYS();
+        break;
       }
-      break;
-    case FMT_8_8_8_8:
-      if (!vtx.num_format_all) {
-        vtx_format = vtx.format_comp_all ?
-            DXGI_FORMAT_R8G8B8A8_SNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
-      } else {
-        vtx_format = vtx.format_comp_all ?
-            DXGI_FORMAT_R8G8B8A8_SINT : DXGI_FORMAT_R8G8B8A8_UINT;
-      }
-      break;
-    case FMT_2_10_10_10:
-      if (!vtx.num_format_all) {
-        vtx_format = DXGI_FORMAT_R10G10B10A2_UNORM;
-      } else {
-        vtx_format = DXGI_FORMAT_R10G10B10A2_UINT;
-      }
-      break;
-    case FMT_8_8:
-      if (!vtx.num_format_all) {
-        vtx_format = vtx.format_comp_all ?
-            DXGI_FORMAT_R8G8_SNORM : DXGI_FORMAT_R8G8_UNORM;
-      } else {
-        vtx_format = vtx.format_comp_all ?
-            DXGI_FORMAT_R8G8_SINT : DXGI_FORMAT_R8G8_UINT;
-      }
-      break;
-    case FMT_16:
-      if (!vtx.num_format_all) {
-        vtx_format = vtx.format_comp_all ?
-            DXGI_FORMAT_R16_SNORM : DXGI_FORMAT_R16_UNORM;
-      } else {
-        vtx_format = vtx.format_comp_all ?
-            DXGI_FORMAT_R16_SINT : DXGI_FORMAT_R16_UINT;
-      }
-      break;
-    case FMT_16_16:
-      if (!vtx.num_format_all) {
-        vtx_format = vtx.format_comp_all ?
-            DXGI_FORMAT_R16G16_SNORM : DXGI_FORMAT_R16G16_UNORM;
-      } else {
-        vtx_format = vtx.format_comp_all ?
-            DXGI_FORMAT_R16G16_SINT : DXGI_FORMAT_R16G16_UINT;
-      }
-      break;
-    case FMT_16_16_16_16:
-      if (!vtx.num_format_all) {
-        vtx_format = vtx.format_comp_all ?
-            DXGI_FORMAT_R16G16B16A16_SNORM : DXGI_FORMAT_R16G16B16A16_UNORM;
-      } else {
-        vtx_format = vtx.format_comp_all ?
-            DXGI_FORMAT_R16G16B16A16_SINT : DXGI_FORMAT_R16G16B16A16_UINT;
-      }
-      break;
-    case FMT_32:
-      vtx_format = vtx.format_comp_all ?
-          DXGI_FORMAT_R32_SINT : DXGI_FORMAT_R32_UINT;
-      break;
-    case FMT_32_32:
-      vtx_format = vtx.format_comp_all ?
-          DXGI_FORMAT_R32G32_SINT : DXGI_FORMAT_R32G32_UINT;
-      break;
-    case FMT_32_32_32_32:
-      vtx_format = vtx.format_comp_all ?
-          DXGI_FORMAT_R32G32B32A32_SINT : DXGI_FORMAT_R32G32B32A32_UINT;
-      break;
-    case FMT_32_FLOAT:
-      vtx_format = DXGI_FORMAT_R32_FLOAT;
-      break;
-    case FMT_32_32_FLOAT:
-      vtx_format = DXGI_FORMAT_R32G32_FLOAT;
-      break;
-    case FMT_32_32_32_32_FLOAT:
-      vtx_format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-      break;
-    case FMT_32_32_32_FLOAT:
-      vtx_format = DXGI_FORMAT_R32G32B32_FLOAT;
-      break;
-    default:
-      XEASSERTALWAYS();
-      break;
+      element_descs[el_index].SemanticName         = "XE_VF";
+      element_descs[el_index].SemanticIndex        = el_index;
+      element_descs[el_index].Format               = vtx_format;
+      element_descs[el_index].InputSlot            = vb_slot;
+      element_descs[el_index].AlignedByteOffset    = el.offset_words * 4;
+      element_descs[el_index].InputSlotClass       = D3D11_INPUT_PER_VERTEX_DATA;
+      element_descs[el_index].InstanceDataStepRate = 0;
+      el_index++;
     }
-    element_descs[n].SemanticName         = "XE_VF";
-    element_descs[n].SemanticIndex        = n;
-    element_descs[n].Format               = vtx_format;
-    // Pick slot in same way that driver does.
-    // CONST(31, 2) = reg 31, index 2 = rf([31] * 6 + [2] * 2)
-    uint32_t fetch_slot = vtx.const_index * 3 + vtx.const_index_sel;
-    uint32_t vb_slot = 95 - fetch_slot;
-    element_descs[n].InputSlot            = vb_slot;
-    element_descs[n].AlignedByteOffset    = vtx.offset * 4;
-    element_descs[n].InputSlotClass       = D3D11_INPUT_PER_VERTEX_DATA;
-    element_descs[n].InstanceDataStepRate = 0;
   }
   hr = device_->CreateInputLayout(
       element_descs,
@@ -315,12 +410,12 @@ int D3D11VertexShader::Prepare(xe_gpu_program_cntl_t* program_cntl) {
   return 0;
 }
 
-
 const char* D3D11VertexShader::Translate(xe_gpu_program_cntl_t* program_cntl) {
   Output* output = new Output();
   xe_gpu_translate_ctx_t ctx;
   ctx.output  = output;
   ctx.type    = type_;
+  ctx.tex_fetch_index = 0;
 
   // Add constants buffers.
   // We could optimize this by only including used buffers, but the compiler
@@ -334,16 +429,47 @@ const char* D3D11VertexShader::Translate(xe_gpu_program_cntl_t* program_cntl) {
     "};\n");
   // TODO(benvanik): add bool/loop constants.
 
+  AppendTextureHeader(output);
+
+  // Transform utilities. We adjust the output position in various ways
+  // as we can't do this via D3D11 APIs.
+  output->append(
+    "cbuffer vs_consts : register(b3) {\n"
+    "  float4 window;\n"              // x,y,w,h
+    "  float4 viewport_z_enable;\n"   // min,(max - min),?,enabled
+    "  float4 viewport_size;\n"       // x,y,w,h
+    "};"
+    "float4 applyViewport(float4 pos) {\n"
+    "  if (viewport_z_enable.w) {\n"
+    //"    pos.x = (pos.x + 1) * viewport_size.z * 0.5 + viewport_size.x;\n"
+    //"    pos.y = (1 - pos.y) * viewport_size.w * 0.5 + viewport_size.y;\n"
+    //"    pos.z = viewport_z_enable.x + pos.z * viewport_z_enable.y;\n"
+    // w?
+    "  } else {\n"
+    "    pos.xy = pos.xy / float2(window.z / 2.0, -window.w / 2.0) + float2(-1.0, 1.0);\n"
+    "    pos.zw = float2(0.0, 1.0);\n"
+    "  }\n"
+    "  pos.xy += window.xy;\n"
+    "  return pos;\n"
+    "}\n");
+
   // Add vertex shader input.
   output->append(
     "struct VS_INPUT {\n");
-  int n = 0;
-  for (std::vector<instr_fetch_vtx_t>::iterator it = fetch_vtxs_.begin();
-       it != fetch_vtxs_.end(); ++it, ++n) {
-    const instr_fetch_vtx_t& vtx = *it;
-    uint32_t fetch_slot = vtx.const_index * 3 + vtx.const_index_sel;
-    output->append(
-      "  float4 vf%u_%d : XE_VF%u;\n", fetch_slot, vtx.offset, n);
+  uint32_t el_index = 0;
+  for (uint32_t n = 0; n < vtx_buffer_inputs_.count; n++) {
+    auto& input = vtx_buffer_inputs_.descs[n];
+    for (uint32_t m = 0; m < input.element_count; m++) {
+      auto& el = input.elements[m];
+      auto& vtx = el.vtx_fetch;
+      const char* type_name = GetFormatTypeName(
+          el.format, el.vtx_fetch.format_comp_all, el.vtx_fetch.num_format_all);
+      uint32_t fetch_slot = vtx.const_index * 3 + vtx.const_index_sel;
+      output->append(
+        "  %s vf%u_%d : XE_VF%u;\n",
+        type_name, fetch_slot, vtx.offset, el_index);
+      el_index++;
+    }
   }
   output->append(
     "};\n");
@@ -361,6 +487,10 @@ const char* D3D11VertexShader::Translate(xe_gpu_program_cntl_t* program_cntl) {
       "  float4 o[%d] : XE_O;\n",
       MAX_INTERPOLATORS);
   }
+  if (alloc_counts_.point_size) {
+    output->append(
+      "  float4 oPointSize : PSIZE;\n");
+  }
   output->append(
     "};\n");
 
@@ -372,6 +502,10 @@ const char* D3D11VertexShader::Translate(xe_gpu_program_cntl_t* program_cntl) {
   // Always write position, as some shaders seem to only write certain values.
   output->append(
     "  o.oPos = float4(0.0, 0.0, 0.0, 0.0);\n");
+  if (alloc_counts_.point_size) {
+    output->append(
+      "  o.oPointSize = float4(1.0, 0.0, 0.0, 0.0);\n");
+  }
 
   // TODO(benvanik): remove this, if possible (though the compiler may be smart
   //     enough to do it for us).
@@ -403,12 +537,50 @@ const char* D3D11VertexShader::Translate(xe_gpu_program_cntl_t* program_cntl) {
 
   // main footer.
   output->append(
+    "  o.oPos = applyViewport(o.oPos);\n"
     "  return o;\n"
     "};\n");
 
   set_translated_src(output->buffer);
   delete output;
   return translated_src_;
+}
+
+int D3D11VertexShader::DemandGeometryShader(GeometryShaderType type,
+                                            D3D11GeometryShader** out_shader) {
+  if (geometry_shaders_[type]) {
+    *out_shader = geometry_shaders_[type];
+    return 0;
+  }
+
+  // Demand generate.
+  D3D11GeometryShader* shader = NULL;
+  switch (type) {
+  case POINT_SPRITE_SHADER:
+    shader = new D3D11PointSpriteGeometryShader(device_, hash_);
+    break;
+  case RECT_LIST_SHADER:
+    shader = new D3D11RectListGeometryShader(device_, hash_);
+    break;
+  case QUAD_LIST_SHADER:
+    shader = new D3D11QuadListGeometryShader(device_, hash_);
+    break;
+  default:
+    XEASSERTALWAYS();
+    return 1;
+  }
+  if (!shader) {
+    return 1;
+  }
+
+  if (shader->Prepare(this)) {
+    delete shader;
+    return 1;
+  }
+
+  geometry_shaders_[type] = shader;
+  *out_shader = geometry_shaders_[type];
+  return 0;
 }
 
 
@@ -473,6 +645,7 @@ const char* D3D11PixelShader::Translate(
   xe_gpu_translate_ctx_t ctx;
   ctx.output  = output;
   ctx.type    = type_;
+  ctx.tex_fetch_index = 0;
 
   // We need an input VS to make decisions here.
   // TODO(benvanik): do we need to pair VS/PS up and store the combination?
@@ -493,6 +666,8 @@ const char* D3D11PixelShader::Translate(
     "  float4 c[512];\n"
     "};\n");
   // TODO(benvanik): add bool/loop constants.
+
+  AppendTextureHeader(output);
 
   // Add vertex shader output (pixel shader input).
   output->append(
@@ -571,7 +746,9 @@ const char* D3D11PixelShader::Translate(
 namespace {
 
 static const char chan_names[] = {
-  'x', 'y', 'z', 'w'
+  'x', 'y', 'z', 'w',
+  // these only apply to FETCH dst's, and we shouldn't be using them:
+  '0', '1', '?', '_',
 };
 
 void AppendSrcReg(
@@ -618,7 +795,7 @@ void AppendDestRegName(
         ctx.output->append("o.oPos");
         break;
       case 63:
-        ctx.output->append("o.point_size");
+        ctx.output->append("o.oPointSize");
         break;
       default:
         // Varying.
@@ -1176,6 +1353,24 @@ int TranslateALU_SETNEs(
   return TranslateALU_SETXXs(ctx, alu, "!=");
 }
 
+int TranslateALU_RECIP_IEEE(
+    xe_gpu_translate_ctx_t& ctx, const instr_alu_t& alu) {
+  AppendDestReg(ctx, alu.scalar_dest, alu.scalar_write_mask, alu.export_data);
+  ctx.output->append(" = ");
+  if (alu.scalar_clamp) {
+    ctx.output->append("saturate(");
+  }
+  ctx.output->append("(1.0 / ");
+  AppendSrcReg(ctx, alu.src3_reg, alu.src3_sel, alu.src3_swiz, alu.src3_reg_negate, alu.src3_reg_abs);
+  ctx.output->append(")");
+  if (alu.scalar_clamp) {
+    ctx.output->append(")");
+  }
+  ctx.output->append(";\n");
+  AppendDestRegPost(ctx, alu.scalar_dest, alu.scalar_write_mask, alu.export_data);
+  return 0;
+}
+
 int TranslateALU_MUL_CONST_0(
     xe_gpu_translate_ctx_t& ctx, const instr_alu_t& alu) {
   AppendDestReg(ctx, alu.scalar_dest, alu.scalar_write_mask, alu.export_data);
@@ -1326,7 +1521,7 @@ static xe_gpu_translate_alu_info_t scalar_alu_instrs[0x40] = {
   ALU_INSTR(LOG_IEEE,           1),  // 16
   ALU_INSTR(RECIP_CLAMP,        1),  // 17
   ALU_INSTR(RECIP_FF,           1),  // 18
-  ALU_INSTR(RECIP_IEEE,         1),  // 19
+  ALU_INSTR_IMPL(RECIP_IEEE,         1),  // 19
   ALU_INSTR(RECIPSQ_CLAMP,      1),  // 20
   ALU_INSTR(RECIPSQ_FF,         1),  // 21
   ALU_INSTR(RECIPSQ_IEEE,       1),  // 22
@@ -1595,27 +1790,33 @@ int TranslateVertexFetch(
   // Translate.
   output->append("  ");
   output->append("r%u.xyzw", vtx->dst_reg);
-  output->append(" = ");
+  output->append(" = float4(");
   uint32_t fetch_slot = vtx->const_index * 3 + vtx->const_index_sel;
-  output->append("i.vf%u_%d.", fetch_slot, vtx->offset);
-  // Pass one over dest does xyzw and fakes the special values.
+  // TODO(benvanik): detect xyzw = xyzw, etc.
   // TODO(benvanik): detect and set as rN = float4(samp.xyz, 1.0); / etc
+  uint32_t component_count = GetFormatComponentCount(vtx->format);
   uint32_t dst_swiz = vtx->dst_swiz;
   for (int i = 0; i < 4; i++) {
-    output->append("%c", chan_names[dst_swiz & 0x3]);
-    dst_swiz >>= 3;
-  }
-  output->append(";\n");
-  // Do another pass to set constant values.
-  dst_swiz = vtx->dst_swiz;
-  for (int i = 0; i < 4; i++) {
     if ((dst_swiz & 0x7) == 4) {
-      output->append("  r%u.%c = 0.0;\n", vtx->dst_reg, chan_names[i]);
+      output->append("0.0");
     } else if ((dst_swiz & 0x7) == 5) {
-      output->append("  r%u.%c = 1.0;\n", vtx->dst_reg, chan_names[i]);
+      output->append("1.0");
+    } else if ((dst_swiz & 0x7) == 6) {
+      // ?
+      output->append("?");
+    } else if ((dst_swiz & 0x7) == 7) {
+      output->append("r%u.%c", vtx->dst_reg, chan_names[i]);
+    } else {
+      output->append("i.vf%u_%d.%c",
+                     fetch_slot, vtx->offset,
+                     chan_names[dst_swiz & 0x3]);
+    }
+    if (i < 3) {
+      output->append(", ");
     }
     dst_swiz >>= 3;
   }
+  output->append(");\n");
   return 0;
 }
 
@@ -1704,17 +1905,39 @@ int TranslateTextureFetch(
   }
   output->append("\n");
 
+  int src_component_count = 0;
+  switch (tex->dimension) {
+  case DIMENSION_1D:
+    src_component_count = 1;
+    break;
+  default:
+  case DIMENSION_2D:
+    src_component_count = 2;
+    break;
+  case DIMENSION_3D:
+    src_component_count = 3;
+    break;
+  case DIMENSION_CUBE:
+    src_component_count = 3;
+    break;
+  }
+
   // Translate.
-  src_swiz = tex->src_swiz;
   output->append("  ");
   output->append("r%u.xyzw", tex->dst_reg);
   output->append(" = ");
-  uint32_t fetch_slot = tex->const_idx * 3;
-  //output->append("i.vf%u_%d.", fetch_slot, vtx->offset);
-  // Texture2D some_texture;
-  // SamplerState some_sampler;
-  // some_texture.Sample(some_sampler, coords)
-  output->append("float4(1.0, 0.0, 0.0, 1.0).");
+  output->append(
+      "x_texture_%d.Sample(x_sampler_%d, r%u.",
+      tex->const_idx,
+      ctx.tex_fetch_index++, // hacky way to line up to tex buffers
+      tex->src_reg);
+  src_swiz = tex->src_swiz;
+  for (int i = 0; i < src_component_count; i++) {
+    output->append("%c", chan_names[src_swiz & 0x3]);
+    src_swiz >>= 2;
+  }
+  output->append(").");
+
   // Pass one over dest does xyzw and fakes the special values.
   // TODO(benvanik): detect and set as rN = float4(samp.xyz, 1.0); / etc
   uint32_t dst_swiz = tex->dst_swiz;

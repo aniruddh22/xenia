@@ -9,8 +9,10 @@
 
 #include <alloy/frontend/ppc/ppc_hir_builder.h>
 
+#include <alloy/alloy-private.h>
 #include <alloy/frontend/tracing.h>
 #include <alloy/frontend/ppc/ppc_context.h>
+#include <alloy/frontend/ppc/ppc_disasm.h>
 #include <alloy/frontend/ppc/ppc_frontend.h>
 #include <alloy/frontend/ppc/ppc_instr.h>
 #include <alloy/hir/label.h>
@@ -26,9 +28,11 @@ using namespace alloy::runtime;
 PPCHIRBuilder::PPCHIRBuilder(PPCFrontend* frontend) :
     frontend_(frontend),
     HIRBuilder() {
+  comment_buffer_ = new StringBuffer(4096);
 }
 
 PPCHIRBuilder::~PPCHIRBuilder() {
+  delete comment_buffer_;
 }
 
 void PPCHIRBuilder::Reset() {
@@ -96,17 +100,9 @@ int PPCHIRBuilder::Emit(FunctionInfo* symbol_info, bool with_debug_info) {
       if (label) {
         AnnotateLabel(address, label);
       }
-      if (!i.type) {
-        Comment("%.8X %.8X ???", address, i.code);
-      } else if (i.type->disassemble) {
-        ppc::InstrDisasm d;
-        i.type->disassemble(i, d);
-        std::string disasm;
-        d.Dump(disasm);
-        Comment("%.8X %.8X %s", address, i.code, disasm.c_str());
-      } else {
-        Comment("%.8X %.8X %s ???", address, i.code, i.type->name);
-      }
+      comment_buffer_->Reset();
+      DisasmPPC(i, comment_buffer_);
+      Comment("%.8X %.8X %s", address, i.code, comment_buffer_->GetString());
       first_instr = last_instr();
     }
 
@@ -130,10 +126,10 @@ int PPCHIRBuilder::Emit(FunctionInfo* symbol_info, bool with_debug_info) {
     typedef int (*InstrEmitter)(PPCHIRBuilder& f, InstrData& i);
     InstrEmitter emit = (InstrEmitter)i.type->emit;
 
-    /*if (i.address == FLAGS_break_on_instruction) {
+    if (i.address == FLAGS_break_on_instruction) {
       Comment("--break-on-instruction target");
       DebugBreak();
-    }*/
+    }
 
     if (!i.type->emit || emit(*this, i)) {
       XELOGCPU("Unimplemented instr %.8X %.8X %s",
@@ -149,7 +145,8 @@ int PPCHIRBuilder::Emit(FunctionInfo* symbol_info, bool with_debug_info) {
 
 void PPCHIRBuilder::AnnotateLabel(uint64_t address, Label* label) {
   char name_buffer[13];
-  xesnprintfa(name_buffer, XECOUNT(name_buffer), "loc_%.8X", address);
+  xesnprintfa(name_buffer, XECOUNT(name_buffer),
+              "loc_%.8X", (uint32_t)address);
   label->name = (char*)arena_->Alloc(sizeof(name_buffer));
   xe_copy_struct(label->name, name_buffer, sizeof(name_buffer));
 }
@@ -283,7 +280,17 @@ Value* PPCHIRBuilder::LoadCA() {
 }
 
 void PPCHIRBuilder::StoreCA(Value* value) {
+  value = Truncate(value, INT8_TYPE);
   StoreContext(offsetof(PPCContext, xer_ca), value);
+}
+
+Value* PPCHIRBuilder::LoadSAT() {
+  return LoadContext(offsetof(PPCContext, vscr_sat), INT8_TYPE);
+}
+
+void PPCHIRBuilder::StoreSAT(Value* value) {
+  value = Truncate(value, INT8_TYPE);
+  StoreContext(offsetof(PPCContext, vscr_sat), value);
 }
 
 Value* PPCHIRBuilder::LoadGPR(uint32_t reg) {

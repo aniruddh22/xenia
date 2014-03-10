@@ -25,6 +25,7 @@ XEDECLARECLASS2(xe, kernel, KernelState);
 XEDECLARECLASS2(xe, kernel, XamModule);
 XEDECLARECLASS2(xe, kernel, XboxkrnlModule);
 XEDECLARECLASS3(xe, kernel, fs, FileSystem);
+XEDECLARECLASS2(xe, ui, Window);
 
 
 namespace xe {
@@ -36,6 +37,10 @@ public:
   ~Emulator();
 
   const xechar_t* command_line() const { return command_line_; }
+
+  ui::Window* main_window() const { return main_window_; }
+  void set_main_window(ui::Window* window);
+
   Memory* memory() const { return memory_; }
 
   debug::DebugServer* debug_server() const { return debug_server_; }
@@ -56,10 +61,14 @@ public:
   // TODO(benvanik): raw binary.
   X_STATUS LaunchXexFile(const xechar_t* path);
   X_STATUS LaunchDiscImage(const xechar_t* path);
+  X_STATUS LaunchSTFSTitle(const xechar_t* path);
 
 private:
-  xechar_t          command_line_[XE_MAX_PATH];
-  Memory*           memory_;
+  xechar_t                command_line_[XE_MAX_PATH];
+
+  ui::Window*             main_window_;
+
+  Memory*                 memory_;
 
   debug::DebugServer*     debug_server_;
 

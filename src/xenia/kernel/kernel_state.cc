@@ -10,10 +10,14 @@
 #include <xenia/kernel/kernel_state.h>
 
 #include <xenia/emulator.h>
+#include <xenia/kernel/dispatcher.h>
+#include <xenia/kernel/xam_module.h>
+#include <xenia/kernel/xboxkrnl_module.h>
 #include <xenia/kernel/xboxkrnl_private.h>
 #include <xenia/kernel/xobject.h>
 #include <xenia/kernel/objects/xmodule.h>
 #include <xenia/kernel/objects/xthread.h>
+#include <xenia/kernel/objects/xuser_module.h>
 
 
 using namespace xe;
@@ -32,6 +36,8 @@ KernelState::KernelState(Emulator* emulator) :
   processor_    = emulator->processor();
   file_system_  = emulator->file_system();
 
+  dispatcher_   = new Dispatcher(this);
+
   object_table_ = new ObjectTable();
   object_mutex_ = xe_mutex_alloc(10000);
 
@@ -46,6 +52,8 @@ KernelState::~KernelState() {
   xe_mutex_free(object_mutex_);
   delete object_table_;
 
+  delete dispatcher_;
+
   XEASSERT(shared_kernel_state_ == this);
   shared_kernel_state_ = NULL;
 }
@@ -55,12 +63,29 @@ KernelState* KernelState::shared() {
 }
 
 XModule* KernelState::GetModule(const char* name) {
-  // TODO(benvanik): implement lookup. Most games seem to look for xam.xex/etc.
-  XEASSERTALWAYS();
-  return NULL;
+  if (!name) {
+    // NULL name = self.
+    // TODO(benvanik): lookup module from caller address.
+    return GetExecutableModule();
+  } else if (xestrcasecmpa(name, "xam.xex") == 0) {
+    auto module = emulator_->xam();
+    module->Retain();
+    return module;
+  } else if (xestrcasecmpa(name, "xboxkrnl.exe") == 0) {
+    auto module = emulator_->xboxkrnl();
+    module->Retain();
+    return module;
+  } else if (xestrcasecmpa(name, "kernel32.dll") == 0) {
+    // Some games request this, for some reason. wtf.
+    return NULL;
+  } else {
+    // TODO(benvanik): support user modules/loading/etc.
+    XEASSERTALWAYS();
+    return NULL;
+  }
 }
 
-XModule* KernelState::GetExecutableModule() {
+XUserModule* KernelState::GetExecutableModule() {
   if (!executable_module_) {
     return NULL;
   }
@@ -69,7 +94,7 @@ XModule* KernelState::GetExecutableModule() {
   return executable_module_;
 }
 
-void KernelState::SetExecutableModule(XModule* module) {
+void KernelState::SetExecutableModule(XUserModule* module) {
   if (module == executable_module_) {
     return;
   }

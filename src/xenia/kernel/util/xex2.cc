@@ -24,11 +24,16 @@ using namespace alloy;
 typedef struct xe_xex2 {
   xe_ref_t ref;
 
-  Memory*           memory;
+  Memory* memory;
 
-  xe_xex2_header_t  header;
+  xe_xex2_header_t header;
 
   std::vector<PESection*>* sections;
+
+  struct {
+    size_t count;
+    xe_xex2_import_info_t* infos;
+  } library_imports[16];
 } xe_xex2_t;
 
 
@@ -39,6 +44,8 @@ int xe_xex2_read_image(xe_xex2_ref xex,
                        const uint8_t *xex_addr, const size_t xex_length,
                        Memory* memory);
 int xe_xex2_load_pe(xe_xex2_ref xex);
+int xe_xex2_find_import_infos(xe_xex2_ref xex,
+                              const xe_xex2_import_library_t* library);
 
 
 xe_xex2_ref xe_xex2_load(Memory* memory,
@@ -58,6 +65,11 @@ xe_xex2_ref xe_xex2_load(Memory* memory,
 
   XEEXPECTZERO(xe_xex2_load_pe(xex));
 
+  for (size_t n = 0; n < xex->header.import_library_count; n++) {
+    auto library = &xex->header.import_libraries[n];
+    XEEXPECTZERO(xe_xex2_find_import_infos(xex, library));
+  }
+
   return xex;
 
 XECLEANUP:
@@ -73,6 +85,7 @@ void xe_xex2_dealloc(xe_xex2_ref xex) {
 
   xe_xex2_header_t *header = &xex->header;
   xe_free(header->sections);
+  xe_free(header->resource_infos);
   if (header->file_format_info.compression_type == XEX_COMPRESSION_BASIC) {
     xe_free(header->file_format_info.compression_info.basic.blocks);
   }
@@ -152,14 +165,17 @@ int xe_xex2_read_header(const uint8_t *addr, const size_t length,
       break;
     case XEX_HEADER_RESOURCE_INFO:
       {
-        xe_xex2_resource_info_t *res = &header->resource_info;
-        XEEXPECTZERO(xe_copy_memory(res->title_id,
-                                    sizeof(res->title_id), pp + 0x04, 8));
-        res->address            = XEGETUINT32BE(pp + 0x0C);
-        res->size               = XEGETUINT32BE(pp + 0x10);
-        if ((opt_header->length - 4) / 16 > 1) {
-          // Ignoring extra resources (not yet seen)
-          XELOGW("ignoring extra XEX_HEADER_RESOURCE_INFO resources");
+        header->resource_info_count = (opt_header->length - 4) / 16;
+        header->resource_infos = (xe_xex2_resource_info_t*)xe_calloc(
+            sizeof(xe_xex2_resource_info_t) * header->resource_info_count);
+        const uint8_t* ph = pp + 0x04;
+        for (size_t n = 0; n < header->resource_info_count; n++) {
+          auto& res = header->resource_infos[n];
+          XEEXPECTZERO(xe_copy_memory(res.name,
+                                      sizeof(res.name), ph + 0x00, 8));
+          res.address           = XEGETUINT32BE(ph + 0x08);
+          res.size              = XEGETUINT32BE(ph + 0x0C);
+          ph += 16;
         }
       }
       break;
@@ -239,8 +255,9 @@ int xe_xex2_read_header(const uint8_t *addr, const size_t length,
           library->version.value      = XEGETUINT32BE(pp + 0x1C);
           library->min_version.value  = XEGETUINT32BE(pp + 0x20);
 
-          const uint16_t name_index = XEGETUINT16BE(pp + 0x24);
+          const uint16_t name_index = XEGETUINT16BE(pp + 0x24) & 0xFF;
           for (size_t i = 0, j = 0; i < string_table_size;) {
+            XEASSERT(j <= 0xFF);
             if (j == name_index) {
               XEIGNORE(xestrcpya(library->name, XECOUNT(library->name),
                                  string_table + i));
@@ -889,12 +906,10 @@ const PESection* xe_xex2_get_pe_section(xe_xex2_ref xex, const char* name) {
   return NULL;
 }
 
-int xe_xex2_get_import_infos(xe_xex2_ref xex,
-                             const xe_xex2_import_library_t *library,
-                             xe_xex2_import_info_t **out_import_infos,
-                             size_t *out_import_info_count) {
-  uint8_t *mem = xex->memory->membase();
-  const xe_xex2_header_t *header = xe_xex2_get_header(xex);
+int xe_xex2_find_import_infos(xe_xex2_ref xex,
+                              const xe_xex2_import_library_t *library) {
+  uint8_t* mem = xex->memory->membase();
+  auto header = xe_xex2_get_header(xex);
 
   // Find library index for verification.
   size_t library_index = -1;
@@ -965,13 +980,34 @@ int xe_xex2_get_import_infos(xe_xex2_ref xex,
     }
   }
 
-  *out_import_info_count  = info_count;
-  *out_import_infos       = infos;
+  xex->library_imports[library_index].count = info_count;
+  xex->library_imports[library_index].infos = infos;
   return 0;
 
 XECLEANUP:
   xe_free(infos);
-  *out_import_info_count  = 0;
-  *out_import_infos       = NULL;
   return 1;
+}
+
+int xe_xex2_get_import_infos(xe_xex2_ref xex,
+                             const xe_xex2_import_library_t *library,
+                             xe_xex2_import_info_t **out_import_infos,
+                             size_t *out_import_info_count) {
+  auto header = xe_xex2_get_header(xex);
+
+  // Find library index for verification.
+  size_t library_index = -1;
+  for (size_t n = 0; n < header->import_library_count; n++) {
+    if (&header->import_libraries[n] == library) {
+      library_index = n;
+      break;
+    }
+  }
+  if (library_index == (size_t)-1) {
+    return 1;
+  }
+
+  *out_import_info_count = xex->library_imports[library_index].count;
+  *out_import_infos = xex->library_imports[library_index].infos;
+  return 0;
 }

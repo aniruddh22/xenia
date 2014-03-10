@@ -64,6 +64,12 @@ typedef union {
 
 #pragma pack(push, 4)
 typedef struct XECACHEALIGN64 PPCContext_s {
+  // Must be stored at 0x0 for now.
+  // TODO(benvanik): find a nice way to describe this to the JIT.
+  runtime::ThreadState* thread_state;
+  // TODO(benvanik): this is getting nasty. Must be here.
+  uint8_t*              membase;
+
   // Most frequently used registers first.
   uint64_t    r[32];              // General purpose registers
   uint64_t    lr;                 // Link register
@@ -175,6 +181,8 @@ typedef struct XECACHEALIGN64 PPCContext_s {
     } bits;
   } fpscr;                        // Floating-point status and control register
 
+  uint8_t vscr_sat;
+
   double        f[32];            // Floating-point registers
   vec128_t      v[128];           // VMX128 vector registers
 
@@ -190,9 +198,7 @@ typedef struct XECACHEALIGN64 PPCContext_s {
 
   // Runtime-specific data pointer. Used on callbacks to get access to the
   // current runtime and its data.
-  uint8_t*              membase;
   runtime::Runtime*     runtime;
-  runtime::ThreadState* thread_state;
   volatile int          suspend_flag;
 
   void SetRegFromString(const char* name, const char* value);

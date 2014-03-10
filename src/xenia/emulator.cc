@@ -19,6 +19,7 @@
 #include <xenia/kernel/kernel_state.h>
 #include <xenia/kernel/modules.h>
 #include <xenia/kernel/fs/filesystem.h>
+#include <xenia/ui/window.h>
 
 
 using namespace xe;
@@ -29,9 +30,11 @@ using namespace xe::gpu;
 using namespace xe::hid;
 using namespace xe::kernel;
 using namespace xe::kernel::fs;
+using namespace xe::ui;
 
 
 Emulator::Emulator(const xechar_t* command_line) :
+    main_window_(0),
     memory_(0),
     debug_server_(0),
     processor_(0),
@@ -43,6 +46,10 @@ Emulator::Emulator(const xechar_t* command_line) :
 
 Emulator::~Emulator() {
   // Note that we delete things in the reverse order they were initialized.
+
+  if (main_window_) {
+    main_window_->Close();
+  }
 
   // Disconnect all debug clients first.
   if (debug_server_) {
@@ -138,6 +145,16 @@ XECLEANUP:
   return result;
 }
 
+void Emulator::set_main_window(Window* window) {
+  XEASSERTNULL(main_window_);
+  main_window_ = window;
+
+  window->closed.AddListener([](UIEvent& e) {
+    // TODO(benvanik): call module API to kill? this is a bad shutdown.
+    exit(1);
+  });
+}
+
 X_STATUS Emulator::LaunchXexFile(const xechar_t* path) {
   // We create a virtual filesystem pointing to its directory and symlink
   // that to the game filesystem.
@@ -200,6 +217,31 @@ X_STATUS Emulator::LaunchDiscImage(const xechar_t* path) {
       "\\Device\\Cdrom0", path);
   if (result_code) {
     XELOGE("Unable to mount disc image");
+    return result_code;
+  }
+
+  // Create symlinks to the device.
+  file_system_->CreateSymbolicLink(
+      "game:",
+      "\\Device\\Cdrom0");
+  file_system_->CreateSymbolicLink(
+      "d:",
+      "\\Device\\Cdrom0");
+
+  // Launch the game.
+  return xboxkrnl_->LaunchModule("game:\\default.xex");
+}
+
+X_STATUS Emulator::LaunchSTFSTitle(const xechar_t* path) {
+  int result_code = 0;
+
+  // TODO(benvanik): figure out paths.
+
+  // Register the disc image in the virtual filesystem.
+  result_code = file_system_->RegisterSTFSContainerDevice(
+      "\\Device\\Cdrom0", path);
+  if (result_code) {
+    XELOGE("Unable to mount STFS container");
     return result_code;
   }
 

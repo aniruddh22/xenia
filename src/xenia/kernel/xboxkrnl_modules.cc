@@ -11,7 +11,7 @@
 
 #include <xenia/kernel/kernel_state.h>
 #include <xenia/kernel/xboxkrnl_private.h>
-#include <xenia/kernel/objects/xmodule.h>
+#include <xenia/kernel/objects/xuser_module.h>
 #include <xenia/kernel/util/shim_utils.h>
 #include <xenia/kernel/util/xex2.h>
 
@@ -35,6 +35,18 @@ X_STATUS xeExGetXConfigSetting(
   // http://free60.org/XConfig
   // http://freestyledash.googlecode.com/svn/trunk/Freestyle/Tools/Generic/ExConfig.h
   switch (category) {
+  case 0x0002:
+    // XCONFIG_SECURED_CATEGORY
+    switch (setting) {
+    case 0x0002: // XCONFIG_SECURED_AV_REGION
+      setting_size = 4;
+      value = 0x00001000; // USA/Canada
+      break;
+    default:
+      XEASSERTALWAYS();
+      return X_STATUS_INVALID_PARAMETER_2;
+    }
+    break;
   case 0x0003:
     // XCONFIG_USER_CATEGORY
     switch (setting) {
@@ -116,7 +128,7 @@ SHIM_CALL ExGetXConfigSetting_shim(
     SHIM_SET_MEM_16(required_size_ptr, required_size);
   }
 
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_32(result);
 }
 
 
@@ -131,7 +143,7 @@ int xeXexCheckExecutablePriviledge(uint32_t privilege) {
   // Privilege=6 -> 0x00000040 -> XEX_SYSTEM_INSECURE_SOCKETS
   uint32_t mask = 1 << privilege;
 
-  XModule* module = state->GetExecutableModule();
+  XUserModule* module = state->GetExecutableModule();
   if (!module) {
     return 0;
   }
@@ -157,7 +169,7 @@ SHIM_CALL XexCheckExecutablePrivilege_shim(
 
   int result = xeXexCheckExecutablePriviledge(privilege);
 
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_32(result);
 }
 
 
@@ -196,17 +208,86 @@ SHIM_CALL XexGetModuleHandle_shim(
 
   X_HANDLE module_handle = 0;
   int result = xeXexGetModuleHandle(module_name, &module_handle);
-  if (result) {
-    SHIM_SET_MEM_32(module_handle_ptr, module_handle);
-  }
+  SHIM_SET_MEM_32(module_handle_ptr, module_handle);
 
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_32(result);
 }
 
 
-// SHIM_CALL XexGetModuleSection_shim(
-//     PPCContext* ppc_state, KernelState* state) {
-// }
+SHIM_CALL XexGetModuleSection_shim(
+    PPCContext* ppc_state, KernelState* state) {
+  uint32_t handle = SHIM_GET_ARG_32(0);
+  uint32_t name_ptr = SHIM_GET_ARG_32(1);
+  const char* name = (const char*)SHIM_MEM_ADDR(name_ptr);
+  uint32_t data_ptr = SHIM_GET_ARG_32(2);
+  uint32_t size_ptr = SHIM_GET_ARG_32(3);
+
+  XELOGD(
+      "XexGetModuleSection(%.8X, %s, %.8X, %.8X)",
+      handle, name, data_ptr, size_ptr);
+
+  XModule* module = NULL;
+  X_STATUS result =
+      state->object_table()->GetObject(handle, (XObject**)&module);
+  if (XSUCCEEDED(result)) {
+    uint32_t section_data = 0;
+    uint32_t section_size = 0;
+    result = module->GetSection(name, &section_data, &section_size);
+    if (XSUCCEEDED(result)) {
+      SHIM_SET_MEM_32(data_ptr, section_data);
+      SHIM_SET_MEM_32(size_ptr, section_size);
+    }
+
+    module->Release();
+  }
+
+  SHIM_SET_RETURN_32(result);
+}
+
+
+SHIM_CALL XexLoadImage_shim(
+    PPCContext* ppc_state, KernelState* state) {
+  uint32_t module_name_ptr = SHIM_GET_ARG_32(0);
+  const char* module_name = (const char*)SHIM_MEM_ADDR(module_name_ptr);
+  uint32_t module_flags = SHIM_GET_ARG_32(1);
+  uint32_t min_version = SHIM_GET_ARG_32(2);
+  uint32_t handle_ptr = SHIM_GET_ARG_32(3);
+
+  XELOGD(
+      "XexLoadImage(%s, %.8X, %.8X, %.8X)",
+      module_name, module_flags, min_version, handle_ptr);
+
+  X_STATUS result = X_STATUS_NO_SUCH_FILE;
+
+  XModule* module = state->GetModule(module_name);
+  if (module) {
+    module->RetainHandle();
+    SHIM_SET_MEM_32(handle_ptr, module->handle());
+    module->Release();
+
+    result = X_STATUS_SUCCESS;
+  } else {
+    result = X_STATUS_NO_SUCH_FILE;
+  }
+
+  SHIM_SET_RETURN_32(result);
+}
+
+
+SHIM_CALL XexUnloadImage_shim(
+    PPCContext* ppc_state, KernelState* state) {
+  uint32_t handle = SHIM_GET_ARG_32(0);
+
+  XELOGD(
+      "XexUnloadImage(%.8X)",
+      handle);
+
+  X_STATUS result = X_STATUS_INVALID_HANDLE;
+
+  result = state->object_table()->RemoveHandle(handle);
+
+  SHIM_SET_RETURN_32(result);
+}
 
 
 SHIM_CALL XexGetProcedureAddress_shim(
@@ -233,13 +314,13 @@ SHIM_CALL XexGetProcedureAddress_shim(
   if (XSUCCEEDED(result)) {
     // TODO(benvanik): implement. May need to create stub functions on the fly.
     // module->GetProcAddressByOrdinal(ordinal);
-    result = X_STATUS_INVALID_HANDLE;
+    result = X_STATUS_NOT_IMPLEMENTED;
   }
   if (module) {
     module->Release();
   }
 
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_32(result);
 }
 
 
@@ -278,7 +359,9 @@ void xe::kernel::xboxkrnl::RegisterModuleExports(
   SHIM_SET_MAPPING("xboxkrnl.exe", XexCheckExecutablePrivilege, state);
 
   SHIM_SET_MAPPING("xboxkrnl.exe", XexGetModuleHandle, state);
-  // SHIM_SET_MAPPING("xboxkrnl.exe", XexGetModuleSection, state);
+  SHIM_SET_MAPPING("xboxkrnl.exe", XexGetModuleSection, state);
+  SHIM_SET_MAPPING("xboxkrnl.exe", XexLoadImage, state);
+  SHIM_SET_MAPPING("xboxkrnl.exe", XexUnloadImage, state);
   SHIM_SET_MAPPING("xboxkrnl.exe", XexGetProcedureAddress, state);
 
   SHIM_SET_MAPPING("xboxkrnl.exe", ExRegisterTitleTerminateNotification, state);

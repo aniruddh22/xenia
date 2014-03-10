@@ -23,11 +23,6 @@ XE_COMPILER:    GNUC | MSVC | INTEL | UNKNOWN
 XE_CPU:         32BIT | 64BIT | BIGENDIAN | LITTLEENDIAN
 */
 
-#define XE_PLATFORM(NAME)   (defined XE_PLATFORM_##NAME && XE_PLATFORM_##NAME   )
-#define XE_LIKE(NAME)       (defined XE_LIKE_##NAME     && XE_LIKE_##NAME       )
-#define XE_PROFILE(NAME)    (defined XE_PROFILE_##NAME  && XE_PROFILE_##NAME    )
-#define XE_COMPILER(NAME)   (defined XE_COMPILER_##NAME && XE_COMPILER_##NAME   )
-#define XE_CPU(NAME)        (defined XE_CPU_##NAME      && XE_CPU_##NAME        )
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -133,19 +128,27 @@ XE_CPU:         32BIT | 64BIT | BIGENDIAN | LITTLEENDIAN
 #define XE_DEBUG                1
 #endif  // DEBUG
 
-#if XE_CPU(32BIT)
+#if XE_CPU_32BIT
 #define XE_ALIGNMENT            8
 #else
 #define XE_ALIGNMENT            16
 #endif  // 32BIT
 
-#if XE_LIKE(WIN32) && defined(UNICODE) && UNICODE
+bool xe_has_console();
+#if XE_LIKE_WIN32 && defined(UNICODE) && UNICODE
 int xe_main_thunk(
     int argc, wchar_t* argv[],
     void* user_main, const char* usage);
 #define XE_MAIN_THUNK(NAME, USAGE) \
     int wmain(int argc, wchar_t *argv[]) { \
       return xe_main_thunk(argc, argv, NAME, USAGE); \
+    }
+int xe_main_window_thunk(
+    wchar_t* command_line,
+    void* user_main, const wchar_t* name, const char* usage);
+#define XE_MAIN_WINDOW_THUNK(NAME, APP_NAME, USAGE) \
+    int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPTSTR command_line, int) { \
+      return xe_main_window_thunk(command_line, NAME, APP_NAME, USAGE); \
     }
 #else
 int xe_main_thunk(
@@ -155,6 +158,8 @@ int xe_main_thunk(
     int main(int argc, char **argv) { \
       return xe_main_thunk(argc, argv, (void*)NAME, USAGE); \
     }
+#define XE_MAIN_WINDOW_THUNK(NAME, APP_NAME, USAGE) \
+    XE_MAIN_THUNK(NAME, USAGE)
 #endif  // WIN32
 
 

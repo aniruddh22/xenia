@@ -15,14 +15,16 @@
 
 #include <xenia/export_resolver.h>
 #include <xenia/xbox.h>
-#include <xenia/kernel/kernel_module.h>
 #include <xenia/kernel/object_table.h>
 #include <xenia/kernel/fs/filesystem.h>
 
 
+XEDECLARECLASS1(xe, Emulator);
 XEDECLARECLASS2(xe, cpu, Processor);
+XEDECLARECLASS2(xe, kernel, Dispatcher);
 XEDECLARECLASS2(xe, kernel, XModule);
 XEDECLARECLASS2(xe, kernel, XThread);
+XEDECLARECLASS2(xe, kernel, XUserModule);
 XEDECLARECLASS3(xe, kernel, fs, FileSystem);
 
 
@@ -42,11 +44,13 @@ public:
   cpu::Processor* processor() const { return processor_; }
   fs::FileSystem* file_system() const { return file_system_; }
 
+  Dispatcher* dispatcher() const { return dispatcher_; }
+
   ObjectTable* object_table() const { return object_table_; }
 
   XModule* GetModule(const char* name);
-  XModule* GetExecutableModule();
-  void SetExecutableModule(XModule* module);
+  XUserModule* GetExecutableModule();
+  void SetExecutableModule(XUserModule* module);
 
   void RegisterThread(XThread* thread);
   void UnregisterThread(XThread* thread);
@@ -58,11 +62,13 @@ private:
   cpu::Processor* processor_;
   fs::FileSystem* file_system_;
 
+  Dispatcher*     dispatcher_;
+
   ObjectTable*    object_table_;
   xe_mutex_t*     object_mutex_;
   std::unordered_map<uint32_t, XThread*> threads_by_id_;
 
-  XModule*        executable_module_;
+  XUserModule*    executable_module_;
 
   friend class XObject;
 };

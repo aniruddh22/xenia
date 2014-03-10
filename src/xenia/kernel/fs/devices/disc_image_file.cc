@@ -12,6 +12,7 @@
 #include <xenia/kernel/fs/gdfx.h>
 #include <xenia/kernel/fs/devices/disc_image_entry.h>
 
+#include <xenia/kernel/fs/device.h>
 
 using namespace xe;
 using namespace xe::kernel;
@@ -28,8 +29,33 @@ DiscImageFile::DiscImageFile(
 DiscImageFile::~DiscImageFile() {
 }
 
+const char* DiscImageFile::path(void) const {
+  return entry_->path();
+}
+
+const char* DiscImageFile::absolute_path(void) const {
+  return entry_->absolute_path();
+}
+
+const char* DiscImageFile::name(void) const {
+  return entry_->name();
+}
+
 X_STATUS DiscImageFile::QueryInfo(XFileInfo* out_info) {
   return entry_->QueryInfo(out_info);
+}
+
+X_STATUS DiscImageFile::QueryDirectory(XDirectoryInfo* out_info,
+    size_t length, const char* file_name, bool restart) {
+  return entry_->QueryDirectory(out_info, length, file_name, restart);
+}
+
+X_STATUS DiscImageFile::QueryVolume(XVolumeInfo* out_info, size_t length) {
+  return entry_->device()->QueryVolume(out_info, length);
+}
+
+X_STATUS DiscImageFile::QueryFileSystemAttributes(XFileSystemAttributeInfo* out_info, size_t length) {
+  return entry_->device()->QueryFileSystemAttributes(out_info, length);
 }
 
 X_STATUS DiscImageFile::ReadSync(

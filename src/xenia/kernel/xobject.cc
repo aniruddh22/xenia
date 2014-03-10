@@ -143,7 +143,7 @@ X_STATUS XObject::WaitMultiple(
 
   DWORD result = WaitForMultipleObjectsEx(
       count, wait_handles,
-      wait_type ? TRUE : FALSE, timeout_ms, alertable);
+      wait_type ? FALSE : TRUE, timeout_ms, alertable);
 
   return result;
 }
@@ -224,7 +224,7 @@ XObject* XObject::GetObject(KernelState* kernel_state, void* native_ptr,
         object = ev;
       }
       break;
-    case 2: // MutantObjectt
+    case 2: // MutantObject
       {
         XMutant* mutant = new XMutant(kernel_state);
         mutant->InitializeNative(native_ptr, header);

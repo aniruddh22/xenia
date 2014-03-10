@@ -75,9 +75,21 @@ DEFINE_OPCODE(
     OPCODE_FLAG_BRANCH);
 
 DEFINE_OPCODE(
+    OPCODE_CALL_EXTERN,
+    "call_extern",
+    OPCODE_SIG_X_S,
+    OPCODE_FLAG_BRANCH);
+
+DEFINE_OPCODE(
     OPCODE_RETURN,
     "return",
     OPCODE_SIG_X,
+    OPCODE_FLAG_BRANCH);
+
+DEFINE_OPCODE(
+    OPCODE_RETURN_TRUE,
+    "return_true",
+    OPCODE_SIG_X_V,
     OPCODE_FLAG_BRANCH);
 
 DEFINE_OPCODE(
@@ -174,6 +186,18 @@ DEFINE_OPCODE(
     OPCODE_LOAD_CLOCK,
     "load_clock",
     OPCODE_SIG_V,
+    0);
+
+DEFINE_OPCODE(
+    OPCODE_LOAD_LOCAL,
+    "load_local",
+    OPCODE_SIG_V_V,
+    0);
+
+DEFINE_OPCODE(
+    OPCODE_STORE_LOCAL,
+    "store_local",
+    OPCODE_SIG_X_V_V,
     0);
 
 DEFINE_OPCODE(
@@ -291,13 +315,17 @@ DEFINE_OPCODE(
     OPCODE_DID_CARRY,
     "did_carry",
     OPCODE_SIG_V_V,
-    0);
-
+    OPCODE_FLAG_PAIRED_PREV);
 DEFINE_OPCODE(
     OPCODE_DID_OVERFLOW,
     "did_overflow",
     OPCODE_SIG_V_V,
-    0);
+    OPCODE_FLAG_PAIRED_PREV);
+DEFINE_OPCODE(
+    OPCODE_DID_SATURATE,
+    "did_saturate",
+    OPCODE_SIG_V_V,
+    OPCODE_FLAG_PAIRED_PREV);
 
 DEFINE_OPCODE(
     OPCODE_VECTOR_COMPARE_EQ,
@@ -335,6 +363,12 @@ DEFINE_OPCODE(
     OPCODE_ADD_CARRY,
     "add_carry",
     OPCODE_SIG_V_V_V_V,
+    0);
+
+DEFINE_OPCODE(
+    OPCODE_VECTOR_ADD,
+    "vector_add",
+    OPCODE_SIG_V_V_V,
     OPCODE_FLAG_COMMUNATIVE);
 
 DEFINE_OPCODE(
@@ -527,6 +561,18 @@ DEFINE_OPCODE(
     OPCODE_SWIZZLE,
     "swizzle",
     OPCODE_SIG_V_V_O,
+    0);
+
+DEFINE_OPCODE(
+    OPCODE_PACK,
+    "pack",
+    OPCODE_SIG_V_V,
+    0);
+
+DEFINE_OPCODE(
+    OPCODE_UNPACK,
+    "unpack",
+    OPCODE_SIG_V_V,
     0);
 
 DEFINE_OPCODE(

@@ -27,12 +27,17 @@ struct Output;
 typedef struct {
   Output*       output;
   xenos::XE_GPU_SHADER_TYPE type;
+  uint32_t      tex_fetch_index;
 } xe_gpu_translate_ctx_t;
+
+class D3D11GeometryShader;
 
 
 class D3D11Shader : public Shader {
 public:
   virtual ~D3D11Shader();
+
+  const static uint32_t MAX_INTERPOLATORS = 16;
 
 protected:
   D3D11Shader(
@@ -44,6 +49,7 @@ protected:
   const char* translated_src() const { return translated_src_; }
   void set_translated_src(char* value);
 
+  void AppendTextureHeader(Output* output);
   int TranslateExec(
       xe_gpu_translate_ctx_t& ctx, const xenos::instr_cf_exec_t& cf);
 
@@ -69,12 +75,23 @@ public:
 
   int Prepare(xenos::xe_gpu_program_cntl_t* program_cntl);
 
+  enum GeometryShaderType {
+    POINT_SPRITE_SHADER,
+    RECT_LIST_SHADER,
+    QUAD_LIST_SHADER,
+
+    MAX_GEOMETRY_SHADER_TYPE,
+  };
+  int DemandGeometryShader(GeometryShaderType type,
+                           D3D11GeometryShader** out_shader);
+
 private:
   const char* Translate(xenos::xe_gpu_program_cntl_t* program_cntl);
 
 private:
-  ID3D11VertexShader* handle_;
-  ID3D11InputLayout*  input_layout_;
+  ID3D11VertexShader*   handle_;
+  ID3D11InputLayout*    input_layout_;
+  D3D11GeometryShader*  geometry_shaders_[MAX_GEOMETRY_SHADER_TYPE];
 };
 
 

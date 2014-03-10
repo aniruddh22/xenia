@@ -24,6 +24,9 @@ AudioSystem* Create(Emulator* emulator);
 
 AudioSystem* CreateNop(Emulator* emulator);
 
+#if XE_PLATFORM_WIN32
+AudioSystem* CreateXAudio2(Emulator* emulator);
+#endif  // WIN32
 
 }  // namespace apu
 }  // namespace xe

@@ -27,6 +27,7 @@ int xenia_run(int argc, xechar_t** argv) {
   // Grab path from the flag or unnamed argument.
   if (!FLAGS_target.size() && argc < 2) {
     google::ShowUsageWithFlags("xenia-run");
+    XEFATAL("Pass a file to launch.");
     return 1;
   }
   const xechar_t* path = NULL;
@@ -52,11 +53,8 @@ int xenia_run(int argc, xechar_t** argv) {
   xe_path_get_absolute(path, abs_path, XECOUNT(abs_path));
 
   // Grab file extension.
+  // May be NULL if an STFS file.
   const xechar_t* dot = xestrrchr(abs_path, '.');
-  if (!dot) {
-    XELOGE("Invalid input path; no extension found");
-    return 1;
-  }
 
   // Create the emulator.
   emulator = new Emulator(XT(""));
@@ -70,7 +68,10 @@ int xenia_run(int argc, xechar_t** argv) {
   // Launch based on file type.
   // This is a silly guess based on file extension.
   // NOTE: the runtime launch routine will wait until the module exits.
-  if (xestrcmp(dot, XT(".xex")) == 0) {
+  if (!dot) {
+    // Likely an STFS container.
+    result = emulator->LaunchSTFSTitle(abs_path);
+  } else if (xestrcmp(dot, XT(".xex")) == 0) {
     // Treat as a naked xex file.
     result = emulator->LaunchXexFile(abs_path);
   } else {
@@ -85,6 +86,9 @@ int xenia_run(int argc, xechar_t** argv) {
   result_code = 0;
 XECLEANUP:
   delete emulator;
+  if (result_code) {
+    XEFATAL("Failed to launch emulator: %d", result_code);
+  }
   return result_code;
 }
-XE_MAIN_THUNK(xenia_run, "xenia-run some.xex");
+XE_MAIN_WINDOW_THUNK(xenia_run, XETEXT("xenia-run"), "xenia-run some.xex");

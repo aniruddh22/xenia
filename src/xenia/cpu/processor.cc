@@ -133,6 +133,7 @@ int Processor::Setup() {
   interrupt_thread_lock_ = xe_mutex_alloc(10000);
   interrupt_thread_state_ = new XenonThreadState(
       runtime_, 0, 16 * 1024, 0);
+  interrupt_thread_state_->set_name("Interrupt");
   interrupt_thread_block_ = memory_->HeapAlloc(
       0, 2048, MEMORY_FLAG_ZERO);
   interrupt_thread_state_->context()->r[13] = interrupt_thread_block_;
@@ -525,13 +526,19 @@ json_t* Processor::DumpModule(XexModule* module, bool& succeeded) {
   }
   json_object_set_new(module_json, "headers", headers_json);
 
-  // TODO(benvanik): resources.
-  json_t* resource_info_json = json_object();
-  json_object_set_integer_new(
-        resource_info_json, "address", header->resource_info.address);
-  json_object_set_integer_new(
-        resource_info_json, "size", header->resource_info.size);
-  json_object_set_new(module_json, "resourceInfo", resource_info_json);
+  json_t* resource_infos_json = json_array();
+  for (size_t n = 0; n < header->resource_info_count; n++) {
+    auto& res = header->resource_infos[n];
+    json_t* resource_info_json = json_object();
+    json_object_set_string_new(
+        resource_info_json, "name", res.name);
+    json_object_set_integer_new(
+        resource_info_json, "address", res.address);
+    json_object_set_integer_new(
+        resource_info_json, "size", res.size);
+    json_array_append_new(resource_infos_json, resource_info_json);
+  }
+  json_object_set_new(module_json, "resourceInfos", resource_infos_json);
 
   json_t* sections_json = json_array();
   for (size_t n = 0, i = 0; n < header->section_count; n++) {
@@ -641,7 +648,6 @@ json_t* Processor::DumpModule(XexModule* module, bool& succeeded) {
     json_object_set_new(import_library_json, "imports", imports_json);
 
     json_array_append_new(library_imports_json, import_library_json);
-    xe_free(import_infos);
   }
   json_object_set_new(module_json, "libraryImports", library_imports_json);
 
@@ -661,7 +667,8 @@ json_t* Processor::DumpFunction(uint64_t address, bool& succeeded) {
   // If we ever wanted absolute x64 addresses/etc we could
   // use the x64 from the function in the symbol table.
   Function* fn;
-  if (runtime_->frontend()->DefineFunction(info, true, &fn)) {
+  if (runtime_->frontend()->DefineFunction(
+      info, DEBUG_INFO_ALL_DISASM, &fn)) {
     succeeded = false;
     return json_string("Unable to resolve function");
   }
@@ -690,16 +697,12 @@ json_t* Processor::DumpFunction(uint64_t address, bool& succeeded) {
 
   json_t* disasm_json = json_object();
   json_t* disasm_str_json;
-  disasm_str_json = json_loads(debug_info->source_json(), 0, NULL);
+  disasm_str_json = json_loads(debug_info->source_disasm(), 0, NULL);
   json_object_set_new(disasm_json, "source", disasm_str_json);
   disasm_str_json = json_string(debug_info->raw_hir_disasm());
   json_object_set_new(disasm_json, "rawHir", disasm_str_json);
   disasm_str_json = json_string(debug_info->hir_disasm());
   json_object_set_new(disasm_json, "hir", disasm_str_json);
-  disasm_str_json = json_string(debug_info->raw_lir_disasm());
-  json_object_set_new(disasm_json, "rawLir", disasm_str_json);
-  disasm_str_json = json_string(debug_info->lir_disasm());
-  json_object_set_new(disasm_json, "lir", disasm_str_json);
   disasm_str_json = json_string(debug_info->machine_code_disasm());
   json_object_set_new(disasm_json, "machineCode", disasm_str_json);
   json_object_set_new(fn_json, "disasm", disasm_json);

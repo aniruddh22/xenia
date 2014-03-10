@@ -11,14 +11,15 @@
 
 #include <alloy/backend/x64/x64_backend.h>
 #include <alloy/backend/x64/x64_code_cache.h>
-#include <alloy/backend/x64/lir/lir_builder.h>
-
-#include <third_party/xbyak/xbyak/xbyak.h>
+#include <alloy/backend/x64/x64_thunk_emitter.h>
+#include <alloy/backend/x64/lowering/lowering_table.h>
+#include <alloy/hir/hir_builder.h>
+#include <alloy/runtime/debug_info.h>
 
 using namespace alloy;
 using namespace alloy::backend;
 using namespace alloy::backend::x64;
-using namespace alloy::backend::x64::lir;
+using namespace alloy::hir;
 using namespace alloy::runtime;
 
 using namespace Xbyak;
@@ -28,36 +29,33 @@ namespace alloy {
 namespace backend {
 namespace x64 {
 
-class XbyakAllocator : public Allocator {
-public:
-	virtual bool useProtect() const { return false; }
-};
-
-class XbyakGenerator : public CodeGenerator {
-public:
-  XbyakGenerator(XbyakAllocator* allocator);
-  virtual ~XbyakGenerator();
-  void* Emplace(X64CodeCache* code_cache);
-  int Emit(LIRBuilder* builder);
-private:
-  int EmitInstruction(LIRInstr* instr);
-};
+static const size_t MAX_CODE_SIZE = 1 * 1024 * 1024;
 
 }  // namespace x64
 }  // namespace backend
 }  // namespace alloy
 
 
-X64Emitter::X64Emitter(X64Backend* backend) :
+const uint32_t X64Emitter::gpr_reg_map_[X64Emitter::GPR_COUNT] = {
+  Operand::RBX,
+  Operand::R12, Operand::R13, Operand::R14, Operand::R15,
+};
+
+const uint32_t X64Emitter::xmm_reg_map_[X64Emitter::XMM_COUNT] = {
+  6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+};
+
+
+X64Emitter::X64Emitter(X64Backend* backend, XbyakAllocator* allocator) :
+    runtime_(backend->runtime()),
     backend_(backend),
-    code_cache_(backend->code_cache()) {
-  allocator_ = new XbyakAllocator();
-  generator_ = new XbyakGenerator(allocator_);
+    code_cache_(backend->code_cache()),
+    allocator_(allocator),
+    current_instr_(0),
+    CodeGenerator(MAX_CODE_SIZE, AutoGrow, allocator) {
 }
 
 X64Emitter::~X64Emitter() {
-  delete generator_;
-  delete allocator_;
 }
 
 int X64Emitter::Initialize() {
@@ -65,34 +63,43 @@ int X64Emitter::Initialize() {
 }
 
 int X64Emitter::Emit(
-    LIRBuilder* builder, void*& out_code_address, size_t& out_code_size) {
+    HIRBuilder* builder,
+    uint32_t debug_info_flags, runtime::DebugInfo* debug_info,
+    void*& out_code_address, size_t& out_code_size) {
+  // Reset.
+  if (debug_info_flags & DEBUG_INFO_SOURCE_MAP) {
+    source_map_count_ = 0;
+    source_map_arena_.Reset();
+  }
+
   // Fill the generator with code.
-  int result = generator_->Emit(builder);
+  size_t stack_size = 0;
+  int result = Emit(builder, stack_size);
   if (result) {
     return result;
   }
 
   // Copy the final code to the cache and relocate it.
-  out_code_size = generator_->getSize();
-  out_code_address = generator_->Emplace(code_cache_);
+  out_code_size = getSize();
+  out_code_address = Emplace(stack_size);
+
+  // Stash source map.
+  if (debug_info_flags & DEBUG_INFO_SOURCE_MAP) {
+    debug_info->InitializeSourceMap(
+        source_map_count_,
+        (SourceMapEntry*)source_map_arena_.CloneContents());
+  }
 
   return 0;
 }
 
-XbyakGenerator::XbyakGenerator(XbyakAllocator* allocator) :
-    CodeGenerator(1 * 1024 * 1024, AutoGrow, allocator) {
-}
-
-XbyakGenerator::~XbyakGenerator() {
-}
-
-void* XbyakGenerator::Emplace(X64CodeCache* code_cache) {
+void* X64Emitter::Emplace(size_t stack_size) {
   // To avoid changing xbyak, we do a switcharoo here.
   // top_ points to the Xbyak buffer, and since we are in AutoGrow mode
   // it has pending relocations. We copy the top_ to our buffer, swap the
   // pointer, relocate, then return the original scratch pointer for use.
   uint8_t* old_address = top_;
-  void* new_address = code_cache->PlaceCode(top_, size_);
+  void* new_address = code_cache_->PlaceCode(top_, size_, stack_size);
   top_ = (uint8_t*)new_address;
   ready();
   top_ = old_address;
@@ -100,7 +107,23 @@ void* XbyakGenerator::Emplace(X64CodeCache* code_cache) {
   return new_address;
 }
 
-int XbyakGenerator::Emit(LIRBuilder* builder) {
+int X64Emitter::Emit(HIRBuilder* builder, size_t& out_stack_size) {
+  // Calculate stack size. We need to align things to their natural sizes.
+  // This could be much better (sort by type/etc).
+  auto locals = builder->locals();
+  size_t stack_offset = StackLayout::GUEST_STACK_SIZE;
+  for (auto it = locals.begin(); it != locals.end(); ++it) {
+    auto slot = *it;
+    size_t type_size = GetTypeSize(slot->type);
+    // Align to natural size.
+    stack_offset = XEALIGN(stack_offset, type_size);
+    slot->set_constant(stack_offset);
+    stack_offset += type_size;
+  }
+  // Ensure 16b alignment.
+  stack_offset -= StackLayout::GUEST_STACK_SIZE;
+  stack_offset = XEALIGN(stack_offset, 16);
+
   // Function prolog.
   // Must be 16b aligned.
   // Windows is very strict about the form of this and the epilog:
@@ -112,12 +135,21 @@ int XbyakGenerator::Emit(LIRBuilder* builder) {
   // IMPORTANT: any changes to the prolog must be kept in sync with
   //     X64CodeCache, which dynamically generates exception information.
   //     Adding or changing anything here must be matched!
-  const bool emit_prolog = false;
-  const size_t stack_size = 16;
+  const bool emit_prolog = true;
+  const size_t stack_size = StackLayout::GUEST_STACK_SIZE + stack_offset;
+  XEASSERT((stack_size + 8) % 16 == 0);
+  out_stack_size = stack_size;
+  stack_size_ = stack_size;
   if (emit_prolog) {
-    sub(rsp, stack_size);
-    // TODO(benvanik): save registers.
+    sub(rsp, (uint32_t)stack_size);
+    mov(qword[rsp + StackLayout::GUEST_RCX_HOME], rcx);
+    mov(qword[rsp + StackLayout::GUEST_RET_ADDR], rdx);
+    mov(qword[rsp + StackLayout::GUEST_CALL_RET_ADDR], 0);
+    // ReloadRDX:
+    mov(rdx, qword[rcx + 8]); // membase
   }
+
+  auto lowering_table = backend_->lowering_table();
 
   // Body.
   auto block = builder->first_block();
@@ -130,18 +162,11 @@ int XbyakGenerator::Emit(LIRBuilder* builder) {
     }
 
     // Add instructions.
-    auto instr = block->instr_head;
-    while (instr) {
-      // Stash offset in debug info.
-      // TODO(benvanik): stash size_ value.
-
-      // Emit.
-      int result = EmitInstruction(instr);
-      if (result) {
-        return result;
-      }
-
-      instr = instr->next;
+    // The table will process sequences of instructions to (try to)
+    // generate optimal code.
+    current_instr_ = block->instr_head;
+    if (lowering_table->ProcessBlock(*this, block)) {
+      return 1;
     }
 
     block = block->next;
@@ -150,74 +175,32 @@ int XbyakGenerator::Emit(LIRBuilder* builder) {
   // Function epilog.
   L("epilog");
   if (emit_prolog) {
-    add(rsp, stack_size);
-    // TODO(benvanik): restore registers.
+    mov(rcx, qword[rsp + StackLayout::GUEST_RCX_HOME]);
+    add(rsp, (uint32_t)stack_size);
   }
   ret();
+
+#if XE_DEBUG
+  nop();
+  nop();
+  nop();
+  nop();
+  nop();
+#endif  // XE_DEBUG
 
   return 0;
 }
 
-int XbyakGenerator::EmitInstruction(LIRInstr* instr) {
-  switch (instr->opcode->num) {
-  case LIR_OPCODE_NOP:
-    nop();
-    break;
+Instr* X64Emitter::Advance(Instr* i) {
+  auto next = i->next;
+  current_instr_ = next;
+  return next;
+}
 
-  case LIR_OPCODE_COMMENT:
-    break;
-
-  case LIR_OPCODE_SOURCE_OFFSET:
-    break;
-  case LIR_OPCODE_DEBUG_BREAK:
-    // TODO(benvanik): replace with debugging primitive.
-    db(0xCC);
-    break;
-  case LIR_OPCODE_TRAP:
-    // TODO(benvanik): replace with debugging primitive.
-    db(0xCC);
-    break;
-
-  case LIR_OPCODE_MOV:
-    if (instr->arg1_type() == LIROperandType::OFFSET) {
-      // mov [reg+offset], value
-      mov(ptr[rax + *instr->arg1<intptr_t>()], rbx);
-    } else if (instr->arg2_type() == LIROperandType::OFFSET) {
-      // mov reg, [reg+offset]
-      mov(rbx, ptr[rax + *instr->arg2<intptr_t>()]);
-    } else {
-      // mov reg, reg
-      mov(rax, rbx);
-    }
-    break;
-  case LIR_OPCODE_MOV_ZX:
-    //mov
-    break;
-  case LIR_OPCODE_MOV_SX:
-    //mov
-    break;
-
-  case LIR_OPCODE_TEST:
-    if (instr->arg0_type() == LIROperandType::REGISTER) {
-      if (instr->arg1_type() == LIROperandType::REGISTER) {
-        //test(instr->arg0<LIRRegister>())
-      }
-    }
-    break;
-
-  case LIR_OPCODE_JUMP_EQ: {
-    auto target = (*instr->arg0<LIRLabel*>());
-    je(target->name, T_NEAR);
-    break;
-  }
-  case LIR_OPCODE_JUMP_NE: {
-    auto target = (*instr->arg0<LIRLabel*>());
-    jne(target->name, T_NEAR);
-    break;
-  }
-  default:
-    // Unhandled.
-    break;
-  }
-  return 0;
+void X64Emitter::MarkSourceOffset(Instr* i) {
+  auto entry = source_map_arena_.Alloc<SourceMapEntry>();
+  entry->source_offset  = i->src1.offset;
+  entry->hir_offset     = uint32_t(i->block->ordinal << 16) | i->ordinal;
+  entry->code_offset    = getSize();
+  source_map_count_++;
 }

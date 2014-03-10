@@ -11,6 +11,7 @@
 
 #include <xenia/kernel/fs/devices/host_path_entry.h>
 
+#include <xenia/kernel/fs/device.h>
 
 using namespace xe;
 using namespace xe::kernel;
@@ -28,8 +29,33 @@ HostPathFile::~HostPathFile() {
   CloseHandle(file_handle_);
 }
 
+const char* HostPathFile::path(void) const {
+  return entry_->path();
+}
+
+const char* HostPathFile::absolute_path(void) const {
+  return entry_->absolute_path();
+}
+
+const char* HostPathFile::name(void) const {
+  return entry_->name();
+}
+
 X_STATUS HostPathFile::QueryInfo(XFileInfo* out_info) {
   return entry_->QueryInfo(out_info);
+}
+
+X_STATUS HostPathFile::QueryDirectory(XDirectoryInfo* out_info,
+    size_t length, const char* file_name, bool restart) {
+  return entry_->QueryDirectory(out_info, length, file_name, restart);
+}
+
+X_STATUS HostPathFile::QueryVolume(XVolumeInfo* out_info, size_t length) {
+  return entry_->device()->QueryVolume(out_info, length);
+}
+
+X_STATUS HostPathFile::QueryFileSystemAttributes(XFileSystemAttributeInfo* out_info, size_t length) {
+  return entry_->device()->QueryFileSystemAttributes(out_info, length);
 }
 
 X_STATUS HostPathFile::ReadSync(

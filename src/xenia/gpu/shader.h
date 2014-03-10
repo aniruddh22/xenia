@@ -34,12 +34,42 @@ public:
 
   const char* disasm_src() const { return disasm_src_; }
 
-  const xenos::instr_fetch_vtx_t* GetFetchVtxBySlot(uint32_t fetch_slot);
+  typedef struct {
+    xenos::instr_fetch_vtx_t vtx_fetch;
+    uint32_t format;
+    uint32_t offset_words;
+    uint32_t size_words;
+  } vtx_buffer_element_t;
+  typedef struct {
+    uint32_t input_index;
+    uint32_t fetch_slot;
+    uint32_t stride_words;
+    uint32_t element_count;
+    vtx_buffer_element_t elements[16];
+  } vtx_buffer_desc_t;
+  typedef struct {
+    uint32_t count;
+    vtx_buffer_desc_t descs[16];
+  } vtx_buffer_inputs_t;
+  const vtx_buffer_inputs_t* GetVertexBufferInputs();
+
+  typedef struct {
+    uint32_t input_index;
+    uint32_t fetch_slot;
+    xenos::instr_fetch_tex_t tex_fetch;
+    uint32_t format;
+  } tex_buffer_desc_t;
+  typedef struct {
+    uint32_t count;
+    tex_buffer_desc_t descs[32];
+  } tex_buffer_inputs_t;
+  const tex_buffer_inputs_t* GetTextureBufferInputs();
 
   typedef struct {
     uint32_t  positions;
     uint32_t  params;
     uint32_t  memories;
+    bool      point_size;
   } alloc_counts_t;
   const alloc_counts_t& alloc_counts() const { return alloc_counts_; }
 
@@ -60,11 +90,10 @@ protected:
   char*       disasm_src_;
 
   alloc_counts_t alloc_counts_;
-  std::vector<xenos::instr_cf_exec_t> execs_;
+  std::vector<xenos::instr_cf_exec_t>   execs_;
   std::vector<xenos::instr_cf_alloc_t>  allocs_;
-  std::vector<xenos::instr_fetch_vtx_t> fetch_vtxs_;
-  xenos::instr_fetch_vtx_t fetch_vtx_slots_[96];
-  std::vector<xenos::instr_fetch_tex_t> fetch_texs_;
+  vtx_buffer_inputs_t vtx_buffer_inputs_;
+  tex_buffer_inputs_t tex_buffer_inputs_;
 };
 
 

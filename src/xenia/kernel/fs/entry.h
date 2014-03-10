@@ -19,6 +19,9 @@
 XEDECLARECLASS2(xe, kernel, KernelState);
 XEDECLARECLASS2(xe, kernel, XFile);
 XEDECLARECLASS2(xe, kernel, XFileInfo);
+XEDECLARECLASS2(xe, kernel, XDirectoryInfo);
+XEDECLARECLASS2(xe, kernel, XVolumeInfo);
+XEDECLARECLASS2(xe, kernel, XFileSystemAttributeInfo);
 
 
 namespace xe {
@@ -55,12 +58,18 @@ public:
   Type type() const { return type_; }
   Device* device() const { return device_; }
   const char* path() const { return path_; }
+  const char* absolute_path() const { return absolute_path_; }
   const char* name() const { return name_; }
 
   virtual X_STATUS QueryInfo(XFileInfo* out_info) = 0;
+  virtual X_STATUS QueryDirectory(XDirectoryInfo* out_info,
+                                  size_t length, const char* file_name, bool restart) = 0;
 
+  virtual bool can_map() { return false; }
   virtual MemoryMapping* CreateMemoryMapping(
-      xe_file_mode file_mode, const size_t offset, const size_t length) = 0;
+      xe_file_mode file_mode, const size_t offset, const size_t length) {
+    return NULL;
+  }
 
   virtual X_STATUS Open(
       KernelState* kernel_state,
@@ -71,6 +80,7 @@ private:
   Type      type_;
   Device*   device_;
   char*     path_;
+  char*     absolute_path_;
   char*     name_;
 };
 

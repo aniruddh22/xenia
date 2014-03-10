@@ -40,6 +40,7 @@ typedef enum {
   XE_GPU_PRIMITIVE_TYPE_UNKNOWN_07        = 0x07,
   XE_GPU_PRIMITIVE_TYPE_RECTANGLE_LIST    = 0x08,
   XE_GPU_PRIMITIVE_TYPE_LINE_LOOP         = 0x0C,
+  XE_GPU_PRIMITIVE_TYPE_QUAD_LIST         = 0x0D,
 } XE_GPU_PRIMITIVE_TYPE;
 
 typedef enum {
@@ -48,6 +49,29 @@ typedef enum {
   XE_GPU_ENDIAN_8IN32                     = 0x2,
   XE_GPU_ENDIAN_16IN32                    = 0x3,
 } XE_GPU_ENDIAN;
+
+#define XE_GPU_MAKE_SWIZZLE(x, y, z, w) \
+    (((XE_GPU_SWIZZLE_##x) << 0) | ((XE_GPU_SWIZZLE_##y) << 3) | ((XE_GPU_SWIZZLE_##z) << 6) | ((XE_GPU_SWIZZLE_##w) << 9))
+typedef enum {
+  XE_GPU_SWIZZLE_X                        = 0,
+  XE_GPU_SWIZZLE_R                        = 0,
+  XE_GPU_SWIZZLE_Y                        = 1,
+  XE_GPU_SWIZZLE_G                        = 1,
+  XE_GPU_SWIZZLE_Z                        = 2,
+  XE_GPU_SWIZZLE_B                        = 2,
+  XE_GPU_SWIZZLE_W                        = 3,
+  XE_GPU_SWIZZLE_A                        = 3,
+  XE_GPU_SWIZZLE_0                        = 4,
+  XE_GPU_SWIZZLE_1                        = 5,
+  XE_GPU_SWIZZLE_RGBA                     = XE_GPU_MAKE_SWIZZLE(R, G, B, A),
+  XE_GPU_SWIZZLE_BGRA                     = XE_GPU_MAKE_SWIZZLE(B, G, R, A),
+  XE_GPU_SWIZZLE_RGB1                     = XE_GPU_MAKE_SWIZZLE(R, G, B, 1),
+  XE_GPU_SWIZZLE_BGR1                     = XE_GPU_MAKE_SWIZZLE(B, G, R, 1),
+  XE_GPU_SWIZZLE_000R                     = XE_GPU_MAKE_SWIZZLE(0, 0, 0, R),
+  XE_GPU_SWIZZLE_RRR1                     = XE_GPU_MAKE_SWIZZLE(R, R, R, 1),
+  XE_GPU_SWIZZLE_R111                     = XE_GPU_MAKE_SWIZZLE(R, 1, 1, 1),
+  XE_GPU_SWIZZLE_R000                     = XE_GPU_MAKE_SWIZZLE(R, 0, 0, 0),
+} XE_GPU_SWIZZLE;
 
 XEFORCEINLINE uint32_t GpuSwap(uint32_t value, XE_GPU_ENDIAN endianness) {
   switch (endianness) {
@@ -103,7 +127,7 @@ XEPACKEDUNION(xe_gpu_vertex_fetch_t, {
   XEPACKEDSTRUCTANONYMOUS({
     uint32_t type               : 2;
     uint32_t address            : 30;
-    uint32_t unk0               : 2;
+    uint32_t endian             : 2;
     uint32_t size               : 24;
     uint32_t unk1               : 6;
   });
@@ -117,7 +141,14 @@ XEPACKEDUNION(xe_gpu_vertex_fetch_t, {
 XEPACKEDUNION(xe_gpu_texture_fetch_t, {
   XEPACKEDSTRUCTANONYMOUS({
     uint32_t type               : 2;  // dword_0
-    uint32_t unk0               : 20;
+    uint32_t sign_x             : 2;
+    uint32_t sign_y             : 2;
+    uint32_t sign_z             : 2;
+    uint32_t sign_w             : 2;
+    uint32_t clamp_x            : 3;
+    uint32_t clamp_y            : 3;
+    uint32_t clamp_z            : 3;
+    uint32_t unk0               : 3;
     uint32_t pitch              : 9;
     uint32_t tiled              : 1;
     uint32_t format             : 6;  // dword_1
@@ -126,12 +157,33 @@ XEPACKEDUNION(xe_gpu_texture_fetch_t, {
     uint32_t address            : 20;
     union {                           // dword_2
       struct {
+        uint32_t width          : 24;
+        uint32_t unused         : 8;
+      } size_1d;
+      struct {
         uint32_t width          : 13;
         uint32_t height         : 13;
-        uint32_t unksize2d      : 6;
+        uint32_t unused         : 6;
       } size_2d;
+      struct {
+        uint32_t width          : 13;
+        uint32_t height         : 13;
+        uint32_t depth          : 6;
+      } size_stack;
+      struct {
+        uint32_t width          : 11;
+        uint32_t height         : 11;
+        uint32_t depth          : 10;
+      } size_3d;
     };
-    uint32_t unk3;                    // dword_3
+    uint32_t unk3_0             :  1; // dword_3
+    uint32_t swizzle            :  12; // xyzw, 3b each (XE_GPU_SWIZZLE)
+    uint32_t unk3_1             :  6;
+    uint32_t mag_filter         :  2;
+    uint32_t min_filter         :  2;
+    uint32_t mip_filter         :  2;
+    uint32_t unk3_2             :  6;
+    uint32_t border             :  1;
     uint32_t unk4;                    // dword_4
     uint32_t unk5               : 9;  // dword_5
     uint32_t dimension          : 2;

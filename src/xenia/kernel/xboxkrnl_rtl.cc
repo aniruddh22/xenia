@@ -11,8 +11,8 @@
 
 #include <xenia/kernel/kernel_state.h>
 #include <xenia/kernel/xboxkrnl_private.h>
-#include <xenia/kernel/objects/xmodule.h>
 #include <xenia/kernel/objects/xthread.h>
+#include <xenia/kernel/objects/xuser_module.h>
 #include <xenia/kernel/util/shim_utils.h>
 #include <xenia/kernel/util/xex2.h>
 
@@ -66,7 +66,7 @@ SHIM_CALL RtlCompareMemory_shim(
       source1, source2, length);
 
   uint32_t result = xeRtlCompareMemory(source1, source2, length);
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_64(result);
 }
 
 
@@ -116,7 +116,7 @@ SHIM_CALL RtlCompareMemoryUlong_shim(
       source, length, pattern);
 
   uint32_t result = xeRtlCompareMemoryUlong(source, length, pattern);
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_64(result);
 }
 
 
@@ -178,18 +178,16 @@ void xeRtlInitAnsiString(uint32_t destination_ptr, uint32_t source_ptr) {
   // _Out_     PANSI_STRING DestinationString,
   // _In_opt_  PCSZ SourceString
 
-  const char* source = source_ptr ? (char*)IMPL_MEM_ADDR(source_ptr) : NULL;
-
-  if (source) {
+  if (source_ptr != 0) {
+    const char* source = (char*)IMPL_MEM_ADDR(source_ptr);
     uint16_t length = (uint16_t)xestrlena(source);
     IMPL_SET_MEM_16(destination_ptr + 0, length);
     IMPL_SET_MEM_16(destination_ptr + 2, length + 1);
-    IMPL_SET_MEM_32(destination_ptr + 4, source_ptr);
   } else {
     IMPL_SET_MEM_16(destination_ptr + 0, 0);
     IMPL_SET_MEM_16(destination_ptr + 2, 0);
-    IMPL_SET_MEM_32(destination_ptr + 4, 0);
   }
+  IMPL_SET_MEM_32(destination_ptr + 4, source_ptr);
 }
 
 
@@ -345,209 +343,66 @@ SHIM_CALL RtlUnicodeStringToAnsiString_shim(
 
   X_STATUS result = xeRtlUnicodeStringToAnsiString(
       destination_ptr, source_ptr, alloc_dest);
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_32(result);
 }
 
 
-// TODO: clean me up!
-SHIM_CALL _vsnprintf_shim(
+SHIM_CALL RtlMultiByteToUnicodeN_shim(
     PPCContext* ppc_state, KernelState* state) {
+  uint32_t destination_ptr = SHIM_GET_ARG_32(0);
+  uint32_t destination_len = SHIM_GET_ARG_32(1);
+  uint32_t written_ptr = SHIM_GET_ARG_32(2);
+  uint32_t source_ptr = SHIM_GET_ARG_32(3);
+  uint32_t source_len = SHIM_GET_ARG_32(4);
 
-  uint32_t buffer_ptr = SHIM_GET_ARG_32(0);
-  uint32_t count = SHIM_GET_ARG_32(1);
-  uint32_t format_ptr = SHIM_GET_ARG_32(2);
-  uint32_t arg_ptr = SHIM_GET_ARG_32(3);
+  uint32_t copy_len = destination_len >> 1;
+  copy_len = copy_len < source_len ? copy_len : source_len;
 
-  if (format_ptr == 0) {
-    SHIM_SET_RETURN(-1);
-    return;
+  // TODO: maybe use MultiByteToUnicode on Win32? would require swapping
+
+  auto source = (uint8_t*)SHIM_MEM_ADDR(source_ptr);
+  auto destination = (uint16_t*)SHIM_MEM_ADDR(destination_ptr);
+  for (uint32_t i = 0; i < copy_len; i++)
+  {
+    *destination++ = XESWAP16(*source++);
   }
 
-  char *buffer = (char *)SHIM_MEM_ADDR(buffer_ptr);  // TODO: ensure it never writes past the end of the buffer (count)...
-  const char *format = (const char *)SHIM_MEM_ADDR(format_ptr);
-
-  int arg_index = 0;
-
-  char *b = buffer;
-  for (; *format != '\0'; ++format) {
-    const char *start = format;
-
-    if (*format != '%') {
-      *b++ = *format;
-      continue;
-    }
-
-    ++format;
-    if (*format == '\0') {
-      break;
-    }
-
-    if (*format == '%') {
-      *b++ = *format;
-      continue;
-    }
-
-    const char *end;
-    end = format;
-
-    // skip flags
-    while (*end == '-' ||
-           *end == '+' ||
-           *end == ' ' ||
-           *end == '#' ||
-           *end == '0') {
-      ++end;
-    }
-
-    if (*end == '\0') {
-      break;
-    }
-
-    int arg_extras = 0;
-
-    // skip width
-    if (*end == '*') {
-      ++end;
-      arg_extras++;
-    }
-    else {
-      while (*end >= '0' && *end <= '9') {
-        ++end;
-      }
-    }
-
-    if (*end == '\0') {
-      break;
-    }
-
-    // skip precision
-    if (*end == '.') {
-      ++end;
-
-      if (*end == '*') {
-        ++end;
-        ++arg_extras;
-      }
-      else {
-        while (*end >= '0' && *end <= '9') {
-          ++end;
-        }
-      }
-    }
-
-    if (*end == '\0') {
-      break;
-    }
-
-    // get length
-    int arg_size = 4;
-
-    if (*end == 'h') {
-      ++end;
-      arg_size = 4;
-      if (*end == 'h') {
-        ++end;
-      }
-    }
-    else if (*end == 'l') {
-      ++end;
-      arg_size = 4;
-      if (*end == 'l') {
-        ++end;
-        arg_size = 8;
-      }
-    }
-    else if (*end == 'j') {
-      arg_size = 8;
-      ++end;
-    }
-    else if (*end == 'z') {
-      arg_size = 4;
-      ++end;
-    }
-    else if (*end == 't') {
-      arg_size = 8;
-      ++end;
-    }
-    else if (*end == 'L') {
-      arg_size = 8;
-      ++end;
-    }
-
-    if (*end == '\0') {
-      break;
-    }
-
-    if (*end == 'd' ||
-        *end == 'i' ||
-        *end == 'u' ||
-        *end == 'o' ||
-        *end == 'x' ||
-        *end == 'X' ||
-        *end == 'f' ||
-        *end == 'F' ||
-        *end == 'e' ||
-        *end == 'E' ||
-        *end == 'g' ||
-        *end == 'G' ||
-        *end == 'a' ||
-        *end == 'A' ||
-        *end == 'c') {
-      char local[512];
-      local[0] = '\0';
-      strncat(local, start, end + 1 - start);
-
-      XEASSERT(arg_size == 8 || arg_size == 4);
-      if (arg_size == 8) {
-        if (arg_extras == 0) {
-          uint64_t value = SHIM_MEM_64(arg_ptr + (arg_index * 8)); // TODO: check if this is correct...
-          int result = sprintf(b, local, value);
-          b += result;
-          arg_index++;
-        }
-        else {
-          XEASSERT(false);
-        }
-      }
-      else if (arg_size == 4) {
-        if (arg_extras == 0) {
-          uint32_t value = (uint32_t)SHIM_MEM_64(arg_ptr + (arg_index * 8)); // TODO: check if this is correct...
-          int result = sprintf(b, local, value);
-          b += result;
-          arg_index++;
-        }
-        else {
-          XEASSERT(false);
-        }
-      }
-    }
-    else if (*end == 's' ||
-             *end == 'p' ||
-             *end == 'n') {
-      char local[512];
-      local[0] = '\0';
-      strncat(local, start, end + 1 - start);
-
-      XEASSERT(arg_size == 4);
-      if (arg_extras == 0) {
-        uint32_t value = (uint32_t)SHIM_MEM_64(arg_ptr + (arg_index * 8)); // TODO: check if this is correct...
-        const char *pointer = (const char *)SHIM_MEM_ADDR(value);
-        int result = sprintf(b, local, pointer);
-        b += result;
-        arg_index++;
-      }
-      else {
-        XEASSERT(false);
-      }
-    }
-    else {
-      XEASSERT(false);
-      break;
-    }
-    format = end;
+  if (written_ptr != 0)
+  {
+    SHIM_SET_MEM_32(written_ptr, copy_len << 1);
   }
-  *b++ = '\0';
-  SHIM_SET_RETURN((uint32_t)(b - buffer));
+
+  SHIM_SET_RETURN_32(0);
+}
+
+
+SHIM_CALL RtlUnicodeToMultiByteN_shim(
+    PPCContext* ppc_state, KernelState* state) {
+  uint32_t destination_ptr = SHIM_GET_ARG_32(0);
+  uint32_t destination_len = SHIM_GET_ARG_32(1);
+  uint32_t written_ptr = SHIM_GET_ARG_32(2);
+  uint32_t source_ptr = SHIM_GET_ARG_32(3);
+  uint32_t source_len = SHIM_GET_ARG_32(4);
+
+  uint32_t copy_len = source_len >> 1;
+  copy_len = copy_len < destination_len ? copy_len : destination_len;
+
+  // TODO: maybe use UnicodeToMultiByte on Win32?
+
+  auto source = (uint16_t*)SHIM_MEM_ADDR(source_ptr);
+  auto destination = (uint8_t*)SHIM_MEM_ADDR(destination_ptr);
+  for (uint32_t i = 0; i < copy_len; i++)
+  {
+    uint16_t c = XESWAP16(*source++);
+    *destination++ = c < 256 ? (uint8_t)c : '?';
+  }
+
+  if (written_ptr != 0)
+  {
+    SHIM_SET_MEM_32(written_ptr, copy_len);
+  }
+
+  SHIM_SET_RETURN_32(0);
 }
 
 
@@ -576,7 +431,7 @@ SHIM_CALL RtlNtStatusToDosError_shim(
       status);
 
   uint32_t result = xeRtlNtStatusToDosError(status);
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_32(result);
 }
 
 
@@ -596,7 +451,7 @@ uint32_t xeRtlImageXexHeaderField(uint32_t xex_header_base_ptr,
   // The only ImageField I've seen in the wild is
   // 0x20401 (XEX_HEADER_DEFAULT_HEAP_SIZE), so that's all we'll support.
 
-  XModule* module = NULL;
+  XUserModule* module = NULL;
 
   // TODO(benvanik): use xex_header_base to dereference this.
   // Right now we are only concerned with games making this call on their main
@@ -633,7 +488,7 @@ SHIM_CALL RtlImageXexHeaderField_shim(
       xex_header_base, image_field);
 
   uint32_t result = xeRtlImageXexHeaderField(xex_header_base, image_field);
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_64(result);
 }
 
 
@@ -735,7 +590,7 @@ SHIM_CALL RtlInitializeCriticalSectionAndSpinCount_shim(
 
   X_STATUS result = xeRtlInitializeCriticalSectionAndSpinCount(
       cs_ptr, spin_count);
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_32(result);
 }
 
 
@@ -827,7 +682,7 @@ SHIM_CALL RtlTryEnterCriticalSection_shim(
   uint32_t thread_id = XThread::GetCurrentThreadId(thread_state_block);
 
   uint32_t result = xeRtlTryEnterCriticalSection(cs_ptr, thread_id);
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_64(result);
 }
 
 
@@ -911,13 +766,13 @@ SHIM_CALL RtlTimeFieldsToTime_shim(
   FILETIME ft;
   if (!SystemTimeToFileTime(&st, &ft)) {
     // set last error = ERROR_INVALID_PARAMETER
-    SHIM_SET_RETURN(0);
+    SHIM_SET_RETURN_64(0);
     return;
   }
 
   uint64_t time = (uint64_t(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
   SHIM_SET_MEM_64(time_ptr, time);
-  SHIM_SET_RETURN(1);
+  SHIM_SET_RETURN_64(1);
 }
 
 
@@ -936,8 +791,8 @@ void xe::kernel::xboxkrnl::RegisterRtlExports(
   SHIM_SET_MAPPING("xboxkrnl.exe", RtlInitUnicodeString, state);
   SHIM_SET_MAPPING("xboxkrnl.exe", RtlFreeUnicodeString, state);
   SHIM_SET_MAPPING("xboxkrnl.exe", RtlUnicodeStringToAnsiString, state);
-
-  SHIM_SET_MAPPING("xboxkrnl.exe", _vsnprintf, state);
+  SHIM_SET_MAPPING("xboxkrnl.exe", RtlMultiByteToUnicodeN, state);
+  SHIM_SET_MAPPING("xboxkrnl.exe", RtlUnicodeToMultiByteN, state);
 
   SHIM_SET_MAPPING("xboxkrnl.exe", RtlTimeToTimeFields, state);
   SHIM_SET_MAPPING("xboxkrnl.exe", RtlTimeFieldsToTime, state);

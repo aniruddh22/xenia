@@ -8,10 +8,11 @@
  */
 
 #include <xenia/apu/audio_system.h>
+#include <xenia/apu/audio_driver.h>
 
 #include <xenia/emulator.h>
 #include <xenia/cpu/processor.h>
-#include <xenia/apu/audio_driver.h>
+#include <xenia/cpu/xenon_thread_state.h>
 
 
 using namespace xe;
@@ -21,13 +22,20 @@ using namespace xe::cpu;
 
 AudioSystem::AudioSystem(Emulator* emulator) :
     emulator_(emulator), memory_(emulator->memory()),
-    thread_(0), running_(false), driver_(0) {
-  // Create the run loop used for any windows/etc.
-  // This must be done on the thread we create the driver.
-  run_loop_ = xe_run_loop_create();
+    thread_(0), running_(false) {
+  lock_ = xe_mutex_alloc();
+  memset(clients_, 0, sizeof(clients_));
+  for (size_t i = 0; i < maximum_client_count_; ++i) {
+    client_wait_handles_[i] = CreateEvent(NULL, TRUE, FALSE, NULL);
+    unused_clients_.push(i);
+  }
 }
 
 AudioSystem::~AudioSystem() {
+  for (size_t i = 0; i < maximum_client_count_; ++i) {
+    CloseHandle(client_wait_handles_[i]);
+  }
+  xe_mutex_free(lock_);
 }
 
 X_STATUS AudioSystem::Setup() {
@@ -40,6 +48,14 @@ X_STATUS AudioSystem::Setup() {
   callbacks.read    = (RegisterReadCallback)ReadRegisterThunk;
   callbacks.write   = (RegisterWriteCallback)WriteRegisterThunk;
   emulator_->processor()->AddRegisterAccessCallbacks(callbacks);
+
+  // Setup worker thread state. This lets us make calls into guest code.
+  thread_state_ = new XenonThreadState(
+      emulator_->processor()->runtime(), 0, 16 * 1024, 0);
+  thread_state_->set_name("Audio Worker");
+  thread_block_ = (uint32_t)memory_->HeapAlloc(
+      0, 2048, alloy::MEMORY_FLAG_ZERO);
+  thread_state_->context()->r[13] = thread_block_;
 
   // Create worker thread.
   // This will initialize the audio system.
@@ -55,36 +71,43 @@ X_STATUS AudioSystem::Setup() {
 }
 
 void AudioSystem::ThreadStart() {
-  xe_run_loop_ref run_loop = xe_run_loop_retain(run_loop_);
-
   // Initialize driver and ringbuffer.
   Initialize();
-  XEASSERTNOTNULL(driver_);
+
+  auto processor = emulator_->processor();
 
   // Main run loop.
   while (running_) {
-    // Peek main run loop.
-    if (xe_run_loop_pump(run_loop)) {
-      break;
+    auto result = WaitForMultipleObjectsEx(maximum_client_count_, client_wait_handles_, FALSE, INFINITE, FALSE);
+    if (result == WAIT_FAILED) {
+      DWORD err = GetLastError();
+      XEASSERTALWAYS();
     }
+    size_t pumped = 0;
+    if (result >= WAIT_OBJECT_0 && result <= WAIT_OBJECT_0 + (maximum_client_count_ - 1)) {
+      size_t index = result - WAIT_OBJECT_0;
+      do {
+        xe_mutex_lock(lock_);
+        uint32_t client_callback = clients_[index].callback;
+        uint32_t client_callback_arg = clients_[index].wrapped_callback_arg;
+        xe_mutex_unlock(lock_);
+        if (client_callback) {
+          processor->Execute(thread_state_, client_callback, client_callback_arg, 0);
+        }
+        pumped++;
+        index++;
+      } while (index < maximum_client_count_ && WaitForSingleObject(client_wait_handles_[index], 0) == WAIT_OBJECT_0);
+    }
+
     if (!running_) {
       break;
     }
 
-    // Pump worker.
-    //worker_->Pump();
-    Sleep(1000);
-
-    if (!running_) {
-      break;
+    if (!pumped) {
+      Sleep(500);
     }
-
-    // Pump audio system.
-    Pump();
   }
   running_ = false;
-
-  xe_run_loop_release(run_loop);
 
   // TODO(benvanik): call module API to kill?
 }
@@ -97,7 +120,58 @@ void AudioSystem::Shutdown() {
   xe_thread_join(thread_);
   xe_thread_release(thread_);
 
-  xe_run_loop_release(run_loop_);
+  delete thread_state_;
+  memory()->HeapFree(thread_block_, 0);
+}
+
+X_STATUS AudioSystem::RegisterClient(
+    uint32_t callback, uint32_t callback_arg, size_t* out_index) {
+  XEASSERTTRUE(unused_clients_.size());
+  xe_mutex_lock(lock_);
+
+  auto index = unused_clients_.front();
+
+  auto wait_handle = client_wait_handles_[index];
+  ResetEvent(wait_handle);
+  AudioDriver* driver;
+  auto result = CreateDriver(index, wait_handle, &driver);
+  if (XFAILED(result)) {
+    return result;
+  }
+  XEASSERTNOTNULL(driver != NULL);
+
+  unused_clients_.pop();
+
+  uint32_t ptr = (uint32_t)memory()->HeapAlloc(0, 0x4, 0);
+  auto mem = memory()->membase();
+  XESETUINT32BE(mem + ptr, callback_arg);
+
+  clients_[index] = { driver, callback, callback_arg, ptr };
+
+  if (out_index) {
+    *out_index = index;
+  }
+
+  xe_mutex_unlock(lock_);
+  return X_STATUS_SUCCESS;
+}
+
+void AudioSystem::SubmitFrame(size_t index, uint32_t samples_ptr) {
+  xe_mutex_lock(lock_);
+  XEASSERTTRUE(index < maximum_client_count_);
+  XEASSERTTRUE(clients_[index].driver != NULL);
+  (clients_[index].driver)->SubmitFrame(samples_ptr);
+  ResetEvent(client_wait_handles_[index]);
+  xe_mutex_unlock(lock_);
+}
+
+void AudioSystem::UnregisterClient(size_t index) {
+  xe_mutex_lock(lock_);
+  XEASSERTTRUE(index < maximum_client_count_);
+  DestroyDriver(clients_[index].driver);
+  clients_[index] = { 0 };
+  unused_clients_.push(index);
+  xe_mutex_unlock(lock_);
 }
 
 bool AudioSystem::HandlesRegister(uint64_t addr) {

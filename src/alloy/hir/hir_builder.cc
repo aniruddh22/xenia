@@ -41,6 +41,7 @@ void HIRBuilder::Reset() {
   attributes_ = 0;
   next_label_id_ = 0;
   next_value_ordinal_ = 0;
+  locals_.clear();
   block_head_ = block_tail_ = NULL;
   current_block_ = NULL;
 #if XE_DEBUG
@@ -71,7 +72,7 @@ int HIRBuilder::Finalize() {
         // No following block.
         // Sometimes VC++ generates functions with bl at the end even if they
         // will never return. Just add a return to satisfy things.
-        XELOGW("Fall-through out of the function.");
+        //XELOGW("Fall-through out of the function.");
         Trap();
         Return();
         current_block_ = NULL;
@@ -107,6 +108,9 @@ void HIRBuilder::DumpValue(StringBuffer* str, Value* value) {
     };
     str->Append("v%d.%s", value->ordinal, type_names[value->type]);
   }
+  if (value->reg.index != -1) {
+    str->Append("<%s%d>", value->reg.set->name, value->reg.index);
+  }
 }
 
 void HIRBuilder::DumpOp(
@@ -141,6 +145,13 @@ void HIRBuilder::Dump(StringBuffer* str) {
     str->Append("; attributes = %.8X\n", attributes_);
   }
 
+  for (auto it = locals_.begin(); it != locals_.end(); ++it) {
+    auto local = *it;
+    str->Append("  ; local ");
+    DumpValue(str, local);
+    str->Append("\n");
+  }
+
   uint32_t block_ordinal = 0;
   Block* block = block_head_;
   while (block) {
@@ -159,6 +170,39 @@ void HIRBuilder::Dump(StringBuffer* str) {
         str->Append("label%d:\n", label->id);
       }
       label = label->next;
+    }
+
+    Edge* incoming_edge = block->incoming_edge_head;
+    while (incoming_edge) {
+      auto src_label = incoming_edge->src->label_head;
+      if (src_label && src_label->name) {
+        str->Append("  ; in: %s", src_label->name);
+      } else if (src_label) {
+        str->Append("  ; in: label%d", src_label->id);
+      } else {
+        str->Append("  ; in: <block%d>",
+                    incoming_edge->src->ordinal);
+      }
+      str->Append(", dom:%d, uncond:%d\n",
+                  (incoming_edge->flags & Edge::DOMINATES) ? 1 : 0,
+                  (incoming_edge->flags & Edge::UNCONDITIONAL) ? 1 : 0);
+      incoming_edge = incoming_edge->incoming_next;
+    }
+    Edge* outgoing_edge = block->outgoing_edge_head;
+    while (outgoing_edge) {
+      auto dest_label = outgoing_edge->dest->label_head;
+      if (dest_label && dest_label->name) {
+        str->Append("  ; out: %s", dest_label->name);
+      } else if (dest_label) {
+        str->Append("  ; out: label%d", dest_label->id);
+      } else {
+        str->Append("  ; out: <block%d>",
+                    outgoing_edge->dest->ordinal);
+      }
+      str->Append(", dom:%d, uncond:%d\n",
+                  (outgoing_edge->flags & Edge::DOMINATES) ? 1 : 0,
+                  (outgoing_edge->flags & Edge::UNCONDITIONAL) ? 1 : 0);
+      outgoing_edge = outgoing_edge->outgoing_next;
     }
 
     Instr* i = block->instr_head;
@@ -303,11 +347,12 @@ void HIRBuilder::InsertLabel(Label* label, Instr* prev_instr) {
     block_tail_ = new_block;
   }
   new_block->label_head = new_block->label_tail = label;
+  new_block->incoming_edge_head = new_block->outgoing_edge_head = NULL;
   label->block = new_block;
   label->prev = label->next = NULL;
 
   Instr* prev_next = prev_instr->next;
-  Instr* old_prev_tail = prev_block->instr_tail;
+  Instr* old_prev_tail = prev_block ? prev_block->instr_tail : NULL;
   if (prev_instr->next) {
     Instr* prev_last = prev_instr->next->prev;
     prev_last->next = NULL;
@@ -319,8 +364,7 @@ void HIRBuilder::InsertLabel(Label* label, Instr* prev_instr) {
     new_block->instr_tail = old_prev_tail;
   }
 
-  for (auto instr = new_block->instr_head; instr != new_block->instr_tail;
-       instr = instr->next) {
+  for (auto instr = new_block->instr_head; instr; instr = instr->next) {
     instr->block = new_block;
   }
 
@@ -342,6 +386,19 @@ void HIRBuilder::ResetLabelTags() {
   }
 }
 
+void HIRBuilder::AddEdge(Block* src, Block* dest, uint32_t flags) {
+  Edge* edge = arena_->Alloc<Edge>();
+  edge->src = src;
+  edge->dest = dest;
+  edge->flags = flags;
+  edge->outgoing_prev = NULL;
+  edge->outgoing_next = src->outgoing_edge_head;
+  src->outgoing_edge_head = edge;
+  edge->incoming_prev = NULL;
+  edge->incoming_next = dest->incoming_edge_head;
+  dest->incoming_edge_head = edge;
+}
+
 Block* HIRBuilder::AppendBlock() {
   Block* block = arena_->Alloc<Block>();
   block->arena = arena_;
@@ -356,6 +413,7 @@ Block* HIRBuilder::AppendBlock() {
   }
   current_block_ = block;
   block->label_head = block->label_tail = NULL;
+  block->incoming_edge_head = block->outgoing_edge_head = NULL;
   block->instr_head = block->instr_tail = NULL;
   return block;
 }
@@ -398,10 +456,12 @@ Instr* HIRBuilder::AppendInstr(
   if (!block->instr_head) {
     block->instr_head = instr;
   }
+  instr->ordinal = -1;
   instr->block = block;
   instr->opcode = &opcode_info;
   instr->flags = flags;
   instr->dest = dest;
+  instr->src1.value = instr->src2.value = instr->src3.value = NULL;
   instr->src1_use = instr->src2_use = instr->src3_use = NULL;
   if (dest) {
     dest->def = instr;
@@ -418,7 +478,11 @@ Value* HIRBuilder::AllocValue(TypeName type) {
   value->flags = 0;
   value->def = NULL;
   value->use_head = NULL;
+  value->last_use = NULL;
+  value->local_slot = NULL;
   value->tag = NULL;
+  value->reg.set = NULL;
+  value->reg.index = -1;
   return value;
 }
 
@@ -427,10 +491,14 @@ Value* HIRBuilder::CloneValue(Value* source) {
   value->ordinal = next_value_ordinal_++;
   value->type = source->type;
   value->flags = source->flags;
-  value->constant.i64 = source->constant.i64;
+  value->constant.v128 = source->constant.v128;
   value->def = NULL;
   value->use_head = NULL;
+  value->last_use = NULL;
+  value->local_slot = NULL;
   value->tag = NULL;
+  value->reg.set = NULL;
+  value->reg.index = -1;
   return value;
 }
 
@@ -552,9 +620,31 @@ void HIRBuilder::CallIndirectTrue(
   EndBlock();
 }
 
+void HIRBuilder::CallExtern(FunctionInfo* symbol_info) {
+  Instr* i = AppendInstr(OPCODE_CALL_EXTERN_info, 0);
+  i->src1.symbol_info = symbol_info;
+  i->src2.value = i->src3.value = NULL;
+  EndBlock();
+}
+
 void HIRBuilder::Return() {
   Instr* i = AppendInstr(OPCODE_RETURN_info, 0);
   i->src1.value = i->src2.value = i->src3.value = NULL;
+  EndBlock();
+}
+
+void HIRBuilder::ReturnTrue(Value* cond) {
+  if (cond->IsConstant()) {
+    if (cond->IsConstantTrue()) {
+      Return();
+    }
+    return;
+  }
+
+  ASSERT_ADDRESS_TYPE(value);
+  Instr* i = AppendInstr(OPCODE_RETURN_TRUE_info, 0);
+  i->set_src1(cond);
+  i->src2.value = i->src3.value = NULL;
   EndBlock();
 }
 
@@ -733,22 +823,22 @@ Value* HIRBuilder::Round(Value* value, RoundMode round_mode) {
   return i->dest;
 }
 
-Value* HIRBuilder::VectorConvertI2F(Value* value) {
+Value* HIRBuilder::VectorConvertI2F(Value* value, uint32_t arithmetic_flags) {
   ASSERT_VECTOR_TYPE(value);
 
   Instr* i = AppendInstr(
-      OPCODE_VECTOR_CONVERT_I2F_info, 0,
+      OPCODE_VECTOR_CONVERT_I2F_info, arithmetic_flags,
       AllocValue(value->type));
   i->set_src1(value);
   i->src2.value = i->src3.value = NULL;
   return i->dest;
 }
 
-Value* HIRBuilder::VectorConvertF2I(Value* value, RoundMode round_mode) {
+Value* HIRBuilder::VectorConvertF2I(Value* value, uint32_t arithmetic_flags) {
   ASSERT_VECTOR_TYPE(value);
 
   Instr* i = AppendInstr(
-      OPCODE_VECTOR_CONVERT_F2I_info, round_mode,
+      OPCODE_VECTOR_CONVERT_F2I_info, arithmetic_flags,
       AllocValue(value->type));
   i->set_src1(value);
   i->src2.value = i->src3.value = NULL;
@@ -854,6 +944,28 @@ Value* HIRBuilder::LoadClock() {
       AllocValue(INT64_TYPE));
   i->src1.value = i->src2.value = i->src3.value = NULL;
   return i->dest;
+}
+
+Value* HIRBuilder::AllocLocal(TypeName type) {
+  Value* slot = AllocValue(type);
+  locals_.push_back(slot);
+  return slot;
+}
+
+Value* HIRBuilder::LoadLocal(Value* slot) {
+  Instr* i = AppendInstr(
+      OPCODE_LOAD_LOCAL_info, 0,
+      AllocValue(slot->type));
+  i->set_src1(slot);
+  i->src2.value = i->src3.value = NULL;
+  return i->dest;
+}
+
+void HIRBuilder::StoreLocal(Value* slot, Value* value) {
+  Instr* i = AppendInstr(OPCODE_STORE_LOCAL_info, 0);
+  i->set_src1(slot);
+  i->set_src2(value);
+  i->src3.value = NULL;
 }
 
 Value* HIRBuilder::LoadContext(size_t offset, TypeName type) {
@@ -1052,6 +1164,15 @@ Value* HIRBuilder::DidOverflow(Value* value) {
   return i->dest;
 }
 
+Value* HIRBuilder::DidSaturate(Value* value) {
+  Instr* i = AppendInstr(
+      OPCODE_DID_SATURATE_info, 0,
+      AllocValue(INT8_TYPE));
+  i->set_src1(value);
+  i->src2.value = i->src3.value = NULL;
+  return i->dest;
+}
+
 Value* HIRBuilder::VectorCompareXX(
     const OpcodeInfo& opcode, Value* value1, Value* value2,
     TypeName part_type) {
@@ -1137,6 +1258,24 @@ Value* HIRBuilder::AddWithCarry(
   i->set_src1(value1);
   i->set_src2(value2);
   i->set_src3(value3);
+  return i->dest;
+}
+
+Value* HIRBuilder::VectorAdd(Value* value1, Value* value2, TypeName part_type,
+                             uint32_t arithmetic_flags) {
+  ASSERT_VECTOR_TYPE(value1);
+  ASSERT_VECTOR_TYPE(value2);
+
+  // This is shady.
+  uint32_t flags = part_type | (arithmetic_flags << 8);
+  XEASSERTZERO(flags >> 16);
+
+  Instr* i = AppendInstr(
+      OPCODE_VECTOR_ADD_info, (uint16_t)flags,
+      AllocValue(value1->type));
+  i->set_src1(value1);
+  i->set_src2(value2);
+  i->src3.value = NULL;
   return i->dest;
 }
 
@@ -1647,6 +1786,28 @@ Value* HIRBuilder::Swizzle(
   i->set_src1(value);
   i->src2.offset = swizzle_mask;
   i->src3.value = NULL;
+  return i->dest;
+}
+
+Value* HIRBuilder::Pack(Value* value, uint32_t pack_flags) {
+  ASSERT_VECTOR_TYPE(value);
+  Instr* i = AppendInstr(
+      OPCODE_PACK_info, pack_flags,
+      AllocValue(VEC128_TYPE));
+  i->set_src1(value);
+  i->src2.value = i->src3.value = NULL;
+  return i->dest;
+}
+
+Value* HIRBuilder::Unpack(Value* value, uint32_t pack_flags) {
+  ASSERT_VECTOR_TYPE(value);
+  // TODO(benvanik): check if this is a constant - sometimes this is just used
+  //     to initialize registers.
+  Instr* i = AppendInstr(
+      OPCODE_UNPACK_info, pack_flags,
+      AllocValue(VEC128_TYPE));
+  i->set_src1(value);
+  i->src2.value = i->src3.value = NULL;
   return i->dest;
 }
 

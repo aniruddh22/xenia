@@ -10,7 +10,6 @@
 #include <xenia/apu/nop/nop_audio_system.h>
 
 #include <xenia/apu/apu-private.h>
-#include <xenia/apu/nop/nop_audio_driver.h>
 
 
 using namespace xe;
@@ -25,16 +24,10 @@ NopAudioSystem::NopAudioSystem(Emulator* emulator) :
 NopAudioSystem::~NopAudioSystem() {
 }
 
-void NopAudioSystem::Initialize() {
-  AudioSystem::Initialize();
-
-  XEASSERTNULL(driver_);
-  driver_ = new NopAudioDriver(memory_);
+X_STATUS NopAudioSystem::CreateDriver(size_t index, HANDLE wait_handle, AudioDriver** out_driver) {
+  return X_STATUS_NOT_IMPLEMENTED;
 }
 
-void NopAudioSystem::Pump() {
-}
-
-void NopAudioSystem::Shutdown() {
-  AudioSystem::Shutdown();
+void NopAudioSystem::DestroyDriver(AudioDriver* driver) {
+  XEASSERTALWAYS();
 }

@@ -41,7 +41,12 @@ public:
   uint32_t attributes() const { return attributes_; }
   void set_attributes(uint32_t value) { attributes_ = value; }
 
+  std::vector<Value*>& locals() { return locals_; }
+
+  uint32_t max_value_ordinal() const { return next_value_ordinal_; }
+
   Block* first_block() const { return block_head_; }
+  Block* last_block() const { return block_tail_; }
   Block* current_block() const;
   Instr* last_instr() const;
 
@@ -50,11 +55,10 @@ public:
   void InsertLabel(Label* label, Instr* prev_instr);
   void ResetLabelTags();
 
+  void AddEdge(Block* src, Block* dest, uint32_t flags);
+
   // static allocations:
   // Value* AllocStatic(size_t length);
-
-  // stack allocations:
-  // Value* AllocLocal(TypeName type);
 
   void Comment(const char* format, ...);
 
@@ -74,7 +78,9 @@ public:
                 uint32_t call_flags = 0);
   void CallIndirect(Value* value, uint32_t call_flags = 0);
   void CallIndirectTrue(Value* cond, Value* value, uint32_t call_flags = 0);
+  void CallExtern(runtime::FunctionInfo* symbol_info);
   void Return();
+  void ReturnTrue(Value* cond);
   void SetReturnAddress(Value* value);
 
   void Branch(Label* label, uint32_t branch_flags = 0);
@@ -94,12 +100,8 @@ public:
   Value* Convert(Value* value, TypeName target_type,
                  RoundMode round_mode = ROUND_TO_ZERO);
   Value* Round(Value* value, RoundMode round_mode);
-
-  // TODO(benvanik): make this cleaner -- not happy with it.
-  //     It'd be nice if Convert() supported this, however then we'd need a
-  //     VEC128_INT32_TYPE or something.
-  Value* VectorConvertI2F(Value* value);
-  Value* VectorConvertF2I(Value* value, RoundMode round_mode = ROUND_TO_ZERO);
+  Value* VectorConvertI2F(Value* value, uint32_t arithmetic_flags = 0);
+  Value* VectorConvertF2I(Value* value, uint32_t arithmetic_flags = 0);
 
   Value* LoadZero(TypeName type);
   Value* LoadConstant(int8_t value);
@@ -118,6 +120,10 @@ public:
   Value* LoadVectorShr(Value* sh);
 
   Value* LoadClock();
+
+  Value* AllocLocal(TypeName type);
+  Value* LoadLocal(Value* slot);
+  void StoreLocal(Value* slot, Value* value);
 
   Value* LoadContext(size_t offset, TypeName type);
   void StoreContext(size_t offset, Value* value);
@@ -143,6 +149,7 @@ public:
   Value* CompareUGE(Value* value1, Value* value2);
   Value* DidCarry(Value* value);
   Value* DidOverflow(Value* value);
+  Value* DidSaturate(Value* value);
   Value* VectorCompareEQ(Value* value1, Value* value2, TypeName part_type);
   Value* VectorCompareSGT(Value* value1, Value* value2, TypeName part_type);
   Value* VectorCompareSGE(Value* value1, Value* value2, TypeName part_type);
@@ -152,6 +159,8 @@ public:
   Value* Add(Value* value1, Value* value2, uint32_t arithmetic_flags = 0);
   Value* AddWithCarry(Value* value1, Value* value2, Value* value3,
                       uint32_t arithmetic_flags = 0);
+  Value* VectorAdd(Value* value1, Value* value2, TypeName part_type,
+                   uint32_t arithmetic_flags = 0);
   Value* Sub(Value* value1, Value* value2,
              uint32_t arithmetic_flags = 0);
   Value* Mul(Value* value1, Value* value2, uint32_t arithmetic_flags = 0);
@@ -195,7 +204,8 @@ public:
                  TypeName part_type);
   Value* Swizzle(Value* value, TypeName part_type, uint32_t swizzle_mask);
   // SelectBits(cond, value1, value2)
-  // pack/unpack/etc
+  Value* Pack(Value* value, uint32_t pack_flags = 0);
+  Value* Unpack(Value* value, uint32_t pack_flags = 0);
 
   Value* CompareExchange(Value* address,
                          Value* compare_value, Value* exchange_value);
@@ -228,6 +238,8 @@ protected:
 
   uint32_t  next_label_id_;
   uint32_t  next_value_ordinal_;
+
+  std::vector<Value*> locals_;
 
   Block*    block_head_;
   Block*    block_tail_;

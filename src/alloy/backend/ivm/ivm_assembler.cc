@@ -55,7 +55,8 @@ void IVMAssembler::Reset() {
 
 int IVMAssembler::Assemble(
     FunctionInfo* symbol_info, HIRBuilder* builder,
-    DebugInfo* debug_info, Function** out_function) {
+    uint32_t debug_info_flags, runtime::DebugInfo* debug_info,
+    Function** out_function) {
   IVMFunction* fn = new IVMFunction(symbol_info);
   fn->set_debug_info(debug_info);
 
@@ -73,6 +74,19 @@ int IVMAssembler::Assemble(
   builder->ResetLabelTags();
 
   // Function prologue.
+  size_t stack_offset = 0;
+  auto locals = builder->locals();
+  for (auto it = locals.begin(); it != locals.end(); ++it) {
+    auto slot = *it;
+    size_t type_size = GetTypeSize(slot->type);
+    // Align to natural size.
+    stack_offset = XEALIGN(stack_offset, type_size);
+    slot->set_constant(stack_offset);
+    stack_offset += type_size;
+  }
+  // Ensure 16b alignment.
+  stack_offset = XEALIGN(stack_offset, 16);
+  ctx.stack_size = stack_offset;
 
   auto block = builder->first_block();
   while (block) {

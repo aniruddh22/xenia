@@ -35,7 +35,7 @@ SHIM_CALL XamResetInactivity_shim(
       unk);
 
   // Result ignored.
-  SHIM_SET_RETURN(0);
+  SHIM_SET_RETURN_64(0);
 }
 
 
@@ -50,7 +50,7 @@ SHIM_CALL XamEnableInactivityProcessing_shim(
       unk);
 
   // Expects 0.
-  SHIM_SET_RETURN(0);
+  SHIM_SET_RETURN_64(0);
 }
 
 
@@ -68,7 +68,7 @@ SHIM_CALL XamInputGetCapabilities_shim(
       caps_ptr);
 
   if (!caps_ptr) {
-    SHIM_SET_RETURN(X_ERROR_BAD_ARGUMENTS);
+    SHIM_SET_RETURN_32(X_ERROR_BAD_ARGUMENTS);
     return;
   }
 
@@ -79,7 +79,7 @@ SHIM_CALL XamInputGetCapabilities_shim(
   if (XSUCCEEDED(result)) {
     caps.Write(SHIM_MEM_BASE, caps_ptr);
   }
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_32(result);
 }
 
 
@@ -87,11 +87,13 @@ SHIM_CALL XamInputGetCapabilities_shim(
 SHIM_CALL XamInputGetState_shim(
     PPCContext* ppc_state, KernelState* state) {
   uint32_t user_index = SHIM_GET_ARG_32(0);
-  uint32_t state_ptr = SHIM_GET_ARG_32(1);
+  uint32_t one = SHIM_GET_ARG_32(1);
+  uint32_t state_ptr = SHIM_GET_ARG_32(2);
 
   XELOGD(
-      "XamInputGetState(%d, %.8X)",
+      "XamInputGetState(%d, %.8X, %.8X)",
       user_index,
+      one,
       state_ptr);
 
   // Games call this with a NULL state ptr, probably as a query.
@@ -105,7 +107,7 @@ SHIM_CALL XamInputGetState_shim(
       input_state.Write(SHIM_MEM_BASE, state_ptr);
     }
   }
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_32(result);
 }
 
 
@@ -113,15 +115,17 @@ SHIM_CALL XamInputGetState_shim(
 SHIM_CALL XamInputSetState_shim(
     PPCContext* ppc_state, KernelState* state) {
   uint32_t user_index = SHIM_GET_ARG_32(0);
-  uint32_t vibration_ptr = SHIM_GET_ARG_32(1);
+  uint32_t unk = SHIM_GET_ARG_32(1);
+  uint32_t vibration_ptr = SHIM_GET_ARG_32(2);
 
   XELOGD(
-      "XamInputSetState(%d, %.8X)",
+      "XamInputSetState(%d, %.8X, %.8X)",
       user_index,
+      unk,
       vibration_ptr);
 
   if (!vibration_ptr) {
-    SHIM_SET_RETURN(X_ERROR_BAD_ARGUMENTS);
+    SHIM_SET_RETURN_32(X_ERROR_BAD_ARGUMENTS);
     return;
   }
 
@@ -129,7 +133,7 @@ SHIM_CALL XamInputSetState_shim(
 
   X_INPUT_VIBRATION vibration(SHIM_MEM_BASE, vibration_ptr);
   X_RESULT result = input_system->SetState(user_index, vibration);
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_32(result);
 }
 
 
@@ -151,7 +155,7 @@ SHIM_CALL XamInputGetKeystroke_shim(
       keystroke_ptr);
 
   if (!keystroke_ptr) {
-    SHIM_SET_RETURN(X_ERROR_BAD_ARGUMENTS);
+    SHIM_SET_RETURN_32(X_ERROR_BAD_ARGUMENTS);
     return;
   }
 
@@ -162,7 +166,7 @@ SHIM_CALL XamInputGetKeystroke_shim(
   if (XSUCCEEDED(result)) {
     keystroke.Write(SHIM_MEM_BASE, keystroke_ptr);
   }
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_32(result);
 }
 
 
@@ -182,7 +186,7 @@ SHIM_CALL XamInputGetKeystrokeEx_shim(
       keystroke_ptr);
 
   if (!keystroke_ptr) {
-    SHIM_SET_RETURN(X_ERROR_BAD_ARGUMENTS);
+    SHIM_SET_RETURN_32(X_ERROR_BAD_ARGUMENTS);
     return;
   }
 
@@ -194,7 +198,7 @@ SHIM_CALL XamInputGetKeystrokeEx_shim(
     SHIM_SET_MEM_32(user_index_ptr, keystroke.user_index);
     keystroke.Write(SHIM_MEM_BASE, keystroke_ptr);
   }
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_32(result);
 }
 
 

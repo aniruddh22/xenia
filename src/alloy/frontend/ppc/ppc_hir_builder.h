@@ -35,6 +35,7 @@ public:
 
   int Emit(runtime::FunctionInfo* symbol_info, bool with_debug_info);
 
+  runtime::FunctionInfo* symbol_info() const { return symbol_info_; }
   runtime::FunctionInfo* LookupFunction(uint64_t address);
   Label* LookupLabel(uint64_t address);
 
@@ -55,6 +56,8 @@ public:
   //void StoreOV(Value* value);
   Value* LoadCA();
   void StoreCA(Value* value);
+  Value* LoadSAT();
+  void StoreSAT(Value* value);
 
   Value* LoadGPR(uint32_t reg);
   void StoreGPR(uint32_t reg, Value* value);
@@ -71,6 +74,9 @@ private:
 
 private:
   PPCFrontend*  frontend_;
+
+  // Reset whenever needed:
+  StringBuffer* comment_buffer_;
 
   // Reset each Emit:
   bool          with_debug_info_;

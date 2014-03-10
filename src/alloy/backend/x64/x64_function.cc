@@ -10,6 +10,7 @@
 #include <alloy/backend/x64/x64_function.h>
 
 #include <alloy/backend/x64/tracing.h>
+#include <alloy/backend/x64/x64_backend.h>
 #include <alloy/runtime/runtime.h>
 #include <alloy/runtime/thread_state.h>
 
@@ -20,11 +21,12 @@ using namespace alloy::runtime;
 
 
 X64Function::X64Function(FunctionInfo* symbol_info) :
-    machine_code_(0), code_size_(0),
-    GuestFunction(symbol_info) {
+    machine_code_(NULL), code_size_(0),
+    Function(symbol_info) {
 }
 
 X64Function::~X64Function() {
+  // machine_code_ is freed by code cache.
 }
 
 void X64Function::Setup(void* machine_code, size_t code_size) {
@@ -41,7 +43,11 @@ int X64Function::RemoveBreakpointImpl(Breakpoint* breakpoint) {
 }
 
 int X64Function::CallImpl(ThreadState* thread_state, uint64_t return_address) {
-  typedef void(*call_t)(ThreadState* thread_state, uint64_t return_address);
-  ((call_t)machine_code_)(thread_state, return_address);
+  auto backend = (X64Backend*)thread_state->runtime()->backend();
+  auto thunk = backend->host_to_guest_thunk();
+  thunk(
+      machine_code_,
+      thread_state->raw_context(),
+      (void*)return_address);
   return 0;
 }

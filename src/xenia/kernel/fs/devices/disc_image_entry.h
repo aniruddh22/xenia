@@ -33,7 +33,10 @@ public:
   GDFXEntry* gdfx_entry() const { return gdfx_entry_; }
 
   virtual X_STATUS QueryInfo(XFileInfo* out_info);
+  virtual X_STATUS QueryDirectory(XDirectoryInfo* out_info,
+                                  size_t length, const char* file_name, bool restart);
 
+  virtual bool can_map() { return true; }
   virtual MemoryMapping* CreateMemoryMapping(
       xe_file_mode file_mode, const size_t offset, const size_t length);
 
@@ -45,6 +48,7 @@ public:
 private:
   xe_mmap_ref mmap_;
   GDFXEntry*  gdfx_entry_;
+  std::vector<GDFXEntry*>::iterator gdfx_entry_iterator_;
 };
 
 

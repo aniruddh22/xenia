@@ -43,6 +43,7 @@ private:
 DiscImageEntry::DiscImageEntry(Type type, Device* device, const char* path,
                                xe_mmap_ref mmap, GDFXEntry* gdfx_entry) :
     gdfx_entry_(gdfx_entry),
+    gdfx_entry_iterator_(gdfx_entry->children.end()),
     Entry(type, device, path) {
   mmap_ = xe_mmap_retain(mmap);
 }
@@ -60,6 +61,52 @@ X_STATUS DiscImageEntry::QueryInfo(XFileInfo* out_info) {
   out_info->allocation_size   = 2048;
   out_info->file_length       = gdfx_entry_->size;
   out_info->attributes        = gdfx_entry_->attributes;
+  return X_STATUS_SUCCESS;
+}
+
+X_STATUS DiscImageEntry::QueryDirectory(
+    XDirectoryInfo* out_info, size_t length, const char* file_name, bool restart) {
+  XEASSERTNOTNULL(out_info);
+
+  if (restart == true && gdfx_entry_iterator_ != gdfx_entry_->children.end()) {
+    gdfx_entry_iterator_ = gdfx_entry_->children.end();
+  }
+
+  if (gdfx_entry_iterator_ == gdfx_entry_->children.end()) {
+    gdfx_entry_iterator_ = gdfx_entry_->children.begin();
+    if (gdfx_entry_iterator_ == gdfx_entry_->children.end()) {
+      return X_STATUS_UNSUCCESSFUL;
+    }
+  } else {
+    ++gdfx_entry_iterator_;
+    if (gdfx_entry_iterator_ == gdfx_entry_->children.end()) {
+      return X_STATUS_UNSUCCESSFUL;
+    }
+  }
+
+  auto end = (uint8_t*)out_info + length;
+
+  auto entry = *gdfx_entry_iterator_;
+  auto entry_name = entry->name.c_str();
+  size_t entry_name_length = xestrlena(entry_name);
+
+  if (((uint8_t*)&out_info->file_name[0]) + entry_name_length > end) {
+    gdfx_entry_iterator_ = gdfx_entry_->children.end();
+    return X_STATUS_UNSUCCESSFUL;
+  }
+
+  out_info->next_entry_offset = 0;
+  out_info->file_index        = 0xCDCDCDCD;
+  out_info->creation_time     = 0;
+  out_info->last_access_time  = 0;
+  out_info->last_write_time   = 0;
+  out_info->change_time       = 0;
+  out_info->end_of_file       = entry->size;
+  out_info->allocation_size   = 2048;
+  out_info->attributes        = (X_FILE_ATTRIBUTES)entry->attributes;
+  out_info->file_name_length  = (uint32_t)entry_name_length;
+  memcpy(out_info->file_name, entry_name, entry_name_length);
+
   return X_STATUS_SUCCESS;
 }
 

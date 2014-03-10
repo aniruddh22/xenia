@@ -18,7 +18,8 @@ namespace hir {
 
 
 enum CallFlags {
-  CALL_TAIL       = (1 << 1),
+  CALL_TAIL             = (1 << 1),
+  CALL_POSSIBLE_RETURN  = (1 << 2),
 };
 enum BranchFlags {
   BRANCH_LIKELY   = (1 << 1),
@@ -28,6 +29,8 @@ enum RoundMode {
   // to zero/nearest/etc
   ROUND_TO_ZERO = 0,
   ROUND_TO_NEAREST,
+  ROUND_TO_MINUS_INFINITY,
+  ROUND_TO_POSITIVE_INFINITY,
 };
 enum LoadFlags {
   LOAD_NO_ALIAS   = (1 << 1),
@@ -48,6 +51,7 @@ enum PrefetchFlags {
 enum ArithmeticFlags {
   ARITHMETIC_SET_CARRY = (1 << 1),
   ARITHMETIC_UNSIGNED = (1 << 2),
+  ARITHMETIC_SATURATE = (1 << 3),
 };
 enum Permutes {
   PERMUTE_XY_ZW = 0x00010405,
@@ -62,6 +66,16 @@ enum Swizzles {
   SWIZZLE_XYZW_TO_YZWX = SWIZZLE_MASK(1, 2, 3, 0),
   SWIZZLE_XYZW_TO_ZWXY = SWIZZLE_MASK(2, 3, 0, 1),
   SWIZZLE_XYZW_TO_WXYZ = SWIZZLE_MASK(3, 0, 1, 2),
+};
+enum PackType {
+  PACK_TYPE_D3DCOLOR = 0,
+  PACK_TYPE_FLOAT16_2 = 1,
+  PACK_TYPE_FLOAT16_4 = 2,
+  PACK_TYPE_SHORT_2 = 3,
+  PACK_TYPE_S8_IN_16_LO = 4,
+  PACK_TYPE_S8_IN_16_HI = 5,
+  PACK_TYPE_S16_IN_32_LO = 6,
+  PACK_TYPE_S16_IN_32_HI = 7,
 };
 
 
@@ -81,7 +95,9 @@ enum Opcode {
   OPCODE_CALL_TRUE,
   OPCODE_CALL_INDIRECT,
   OPCODE_CALL_INDIRECT_TRUE,
+  OPCODE_CALL_EXTERN,
   OPCODE_RETURN,
+  OPCODE_RETURN_TRUE,
   OPCODE_SET_RETURN_ADDRESS,
 
   OPCODE_BRANCH,
@@ -102,6 +118,9 @@ enum Opcode {
   OPCODE_LOAD_VECTOR_SHR,
 
   OPCODE_LOAD_CLOCK,
+
+  OPCODE_LOAD_LOCAL,
+  OPCODE_STORE_LOCAL,
 
   OPCODE_LOAD_CONTEXT,
   OPCODE_STORE_CONTEXT,
@@ -127,6 +146,7 @@ enum Opcode {
   OPCODE_COMPARE_UGE,
   OPCODE_DID_CARRY,
   OPCODE_DID_OVERFLOW,
+  OPCODE_DID_SATURATE,
   OPCODE_VECTOR_COMPARE_EQ,
   OPCODE_VECTOR_COMPARE_SGT,
   OPCODE_VECTOR_COMPARE_SGE,
@@ -135,6 +155,7 @@ enum Opcode {
 
   OPCODE_ADD,
   OPCODE_ADD_CARRY,
+  OPCODE_VECTOR_ADD,
   OPCODE_SUB,
   OPCODE_MUL,
   OPCODE_MUL_HI, // TODO(benvanik): remove this and add INT128 type.
@@ -168,6 +189,8 @@ enum Opcode {
   OPCODE_SPLAT,
   OPCODE_PERMUTE,
   OPCODE_SWIZZLE,
+  OPCODE_PACK,
+  OPCODE_UNPACK,
 
   OPCODE_COMPARE_EXCHANGE,
   OPCODE_ATOMIC_EXCHANGE,
@@ -184,6 +207,7 @@ enum OpcodeFlags {
   OPCODE_FLAG_VOLATILE    = (1 << 4),
   OPCODE_FLAG_IGNORE      = (1 << 5),
   OPCODE_FLAG_HIDE        = (1 << 6),
+  OPCODE_FLAG_PAIRED_PREV = (1 << 7),
 };
 
 enum OpcodeSignatureType {

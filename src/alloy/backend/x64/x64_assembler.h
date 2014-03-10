@@ -21,8 +21,7 @@ namespace x64 {
 
 class X64Backend;
 class X64Emitter;
-namespace lir { class LIRBuilder; }
-namespace optimizer { class Optimizer; }
+class XbyakAllocator;
 
 
 class X64Assembler : public Assembler {
@@ -36,16 +35,18 @@ public:
 
   virtual int Assemble(
       runtime::FunctionInfo* symbol_info, hir::HIRBuilder* builder,
-      runtime::DebugInfo* debug_info, runtime::Function** out_function);
+      uint32_t debug_info_flags, runtime::DebugInfo* debug_info,
+      runtime::Function** out_function);
 
 private:
-  void DumpMachineCode(void* machine_code, size_t code_size, StringBuffer* str);
+  void DumpMachineCode(runtime::DebugInfo* debug_info,
+                       void* machine_code, size_t code_size,
+                       StringBuffer* str);
 
 private:
   X64Backend*           x64_backend_;
-  lir::LIRBuilder*      builder_;
-  optimizer::Optimizer* optimizer_;
   X64Emitter*           emitter_;
+  XbyakAllocator*       allocator_;
 
   StringBuffer          string_buffer_;
 };

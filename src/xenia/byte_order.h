@@ -14,11 +14,11 @@
 #include <xenia/types.h>
 
 
-#if XE_COMPILER(MSVC)
+#if XE_COMPILER_MSVC
 #define XESWAP16                        _byteswap_ushort
 #define XESWAP32                        _byteswap_ulong
 #define XESWAP64                        _byteswap_uint64
-#elif XE_LIKE(OSX)
+#elif XE_LIKE_OSX
 #include <libkern/OSByteOrder.h>
 #define XESWAP16                        OSSwapInt16
 #define XESWAP32                        OSSwapInt32
@@ -30,7 +30,7 @@
 #endif
 
 
-#if XE_CPU(BIGENDIAN)
+#if XE_CPU_BIGENDIAN
 #define XESWAP16BE(p)                   (p)
 #define XESWAP32BE(p)                   (p)
 #define XESWAP64BE(p)                   (p)
@@ -47,7 +47,7 @@
 #endif
 
 
-#if XE_CPU(BIGENDIAN)
+#if XE_CPU_BIGENDIAN
 #define XESWAPF32BE(p)                  (p)
 #define XESWAPF64BE(p)                  (p)
 XEFORCEINLINE float XESWAPF32LE(float value) {
@@ -76,6 +76,10 @@ XEFORCEINLINE double XESWAPF64BE(double value) {
 #define XEGETUINT8BE(p)                 ( (uint8_t)(*(p)))
 #define XEGETINT16BE(p)                 ( (int16_t)XESWAP16BE(*(uint16_t*)(p)))
 #define XEGETUINT16BE(p)                ((uint16_t)XESWAP16BE(*(uint16_t*)(p)))
+#define XEGETUINT24BE(p) \
+    (((uint32_t)XEGETUINT8BE((p) + 0) << 16) | \
+     ((uint32_t)XEGETUINT8BE((p) + 1) << 8) | \
+     (uint32_t)XEGETUINT8BE((p) + 2))
 #define XEGETINT32BE(p)                 ( (int32_t)XESWAP32BE(*(uint32_t*)(p)))
 #define XEGETUINT32BE(p)                ((uint32_t)XESWAP32BE(*(uint32_t*)(p)))
 #define XEGETINT64BE(p)                 ( (int64_t)XESWAP64BE(*(uint64_t*)(p)))
@@ -84,6 +88,10 @@ XEFORCEINLINE double XESWAPF64BE(double value) {
 #define XEGETUINT8LE(p)                 ( (uint8_t)(*(p)))
 #define XEGETINT16LE(p)                 ( (int16_t)XESWAP16LE(*(uint16_t*)(p)))
 #define XEGETUINT16LE(p)                ((uint16_t)XESWAP16LE(*(uint16_t*)(p)))
+#define XEGETUINT24LE(p) \
+    (((uint32_t)XEGETUINT8LE((p) + 2) << 16) | \
+     ((uint32_t)XEGETUINT8LE((p) + 1) << 8) | \
+     (uint32_t)XEGETUINT8LE((p) + 0))
 #define XEGETINT32LE(p)                 ( (int32_t)XESWAP32LE(*(uint32_t*)(p)))
 #define XEGETUINT32LE(p)                ((uint32_t)XESWAP32LE(*(uint32_t*)(p)))
 #define XEGETINT64LE(p)                 ( (int64_t)XESWAP64LE(*(uint64_t*)(p)))

@@ -39,12 +39,14 @@ SHIM_CALL NtCreateFile_shim(
 
   X_OBJECT_ATTRIBUTES attrs(SHIM_MEM_BASE, object_attributes_ptr);
 
+  char* object_name = attrs.object_name.Duplicate();
+
   XELOGD(
       "NtCreateFile(%.8X, %.8X, %.8X(%s), %.8X, %.8X, %.8X, %d, %d)",
       handle_ptr,
       desired_access,
       object_attributes_ptr,
-      attrs.object_name.buffer,
+      !object_name ? "(null)" : object_name,
       io_status_block_ptr,
       allocation_size_ptr,
       file_attributes,
@@ -60,9 +62,27 @@ SHIM_CALL NtCreateFile_shim(
   uint32_t info = X_FILE_DOES_NOT_EXIST;
   uint32_t handle;
 
-  // Resolve the file using the virtual file system.
   FileSystem* fs = state->file_system();
-  Entry* entry = fs->ResolvePath(attrs.object_name.buffer);
+  Entry* entry;
+
+  XFile* root_file = NULL;
+  if (attrs.root_directory != 0xFFFFFFFD && // ObDosDevices
+      attrs.root_directory != 0) {
+    result = state->object_table()->GetObject(
+      attrs.root_directory, (XObject**)&root_file);
+    XEASSERT(XSUCCEEDED(result));
+    XEASSERT(root_file->type() == XObject::Type::kTypeFile);
+
+    auto root_path = root_file->absolute_path();
+    auto target_path = xestrdupa((std::string(root_path) + std::string(object_name)).c_str());
+    entry = fs->ResolvePath(target_path);
+    xe_free(target_path);
+  }
+  else {
+    // Resolve the file using the virtual file system.
+    entry = fs->ResolvePath(object_name);
+  }
+
   XFile* file = NULL;
   if (entry && entry->type() == Entry::kTypeFile) {
     // Open the file.
@@ -93,12 +113,82 @@ SHIM_CALL NtCreateFile_shim(
       SHIM_SET_MEM_32(handle_ptr, handle);
     }
   }
-  SHIM_SET_RETURN(result);
+
+  xe_free(object_name);
+  SHIM_SET_RETURN_32(result);
 }
 
 SHIM_CALL NtOpenFile_shim(
     PPCContext* ppc_state, KernelState* state) {
-  SHIM_SET_RETURN(X_STATUS_NO_SUCH_FILE);
+  uint32_t handle_ptr = SHIM_GET_ARG_32(0);
+  uint32_t desired_access = SHIM_GET_ARG_32(1);
+  uint32_t object_attributes_ptr = SHIM_GET_ARG_32(2);
+  uint32_t io_status_block_ptr = SHIM_GET_ARG_32(3);
+  uint32_t open_options = SHIM_GET_ARG_32(4);
+
+  X_OBJECT_ATTRIBUTES attrs(SHIM_MEM_BASE, object_attributes_ptr);
+
+  char* object_name = attrs.object_name.Duplicate();
+
+  XELOGD(
+    "NtOpenFile(%.8X, %.8X, %.8X(%s), %.8X, %d)",
+    handle_ptr,
+    desired_access,
+    object_attributes_ptr,
+    !object_name ? "(null)" : object_name,
+    io_status_block_ptr,
+    open_options);
+
+  X_STATUS result = X_STATUS_NO_SUCH_FILE;
+  uint32_t info = X_FILE_DOES_NOT_EXIST;
+  uint32_t handle;
+
+  XFile* root_file = NULL;
+  if (attrs.root_directory != 0xFFFFFFFD) { // ObDosDevices
+    result = state->object_table()->GetObject(
+      attrs.root_directory, (XObject**)&root_file);
+    XEASSERT(XSUCCEEDED(result));
+    XEASSERT(root_file->type() == XObject::Type::kTypeFile);
+    XEASSERTALWAYS();
+  }
+
+  // Resolve the file using the virtual file system.
+  FileSystem* fs = state->file_system();
+  Entry* entry = fs->ResolvePath(object_name);
+  XFile* file = NULL;
+  if (entry && entry->type() == Entry::kTypeFile) {
+    // Open the file.
+    result = entry->Open(
+      state,
+      desired_access,
+      false, // TODO(benvanik): pick async mode, if needed.
+      &file);
+  }
+  else {
+    result = X_STATUS_NO_SUCH_FILE;
+    info = X_FILE_DOES_NOT_EXIST;
+  }
+
+  if (XSUCCEEDED(result)) {
+    // Handle ref is incremented, so return that.
+    handle = file->handle();
+    file->Release();
+    result = X_STATUS_SUCCESS;
+    info = X_FILE_OPENED;
+  }
+
+  if (io_status_block_ptr) {
+    SHIM_SET_MEM_32(io_status_block_ptr, result);   // Status
+    SHIM_SET_MEM_32(io_status_block_ptr + 4, info); // Information
+  }
+  if (XSUCCEEDED(result)) {
+    if (handle_ptr) {
+      SHIM_SET_MEM_32(handle_ptr, handle);
+    }
+  }
+
+  xe_free(object_name);
+  SHIM_SET_RETURN_32(result);
 }
 
 class xeNtReadFileState {
@@ -214,7 +304,7 @@ SHIM_CALL NtReadFile_shim(
     ev->Release();
   }
 
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_32(result);
 }
 
 SHIM_CALL NtSetInformationFile_shim(
@@ -272,7 +362,7 @@ SHIM_CALL NtSetInformationFile_shim(
     file->Release();
   }
 
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_32(result);
 }
 
 SHIM_CALL NtQueryInformationFile_shim(
@@ -329,13 +419,21 @@ SHIM_CALL NtQueryInformationFile_shim(
         file_info.Write(SHIM_MEM_BASE, file_info_ptr);
       }
       break;
-    case XFileMailslotSetInformation:
+    case XFileXctdCompressionInformation:
       // Read timeout.
       if (length == 4) {
-        info = 4; // ? it's not a read.
-        uint32_t read_timeout = SHIM_MEM_32(file_info_ptr);
-        // May be INFINITE.
-        // Do something with this?
+        uint32_t magic;
+        size_t bytes_read;
+        result = file->Read(&magic, sizeof(magic), 0, &bytes_read);
+        if (XSUCCEEDED(result)) {
+          if (bytes_read == sizeof(magic)) {
+            info = 4;
+            SHIM_SET_MEM_32(file_info_ptr, magic == XESWAP32BE(0x0FF512ED));
+          }
+          else {
+            result = X_STATUS_UNSUCCESSFUL;
+          }
+        }
       } else {
         result = X_STATUS_INFO_LENGTH_MISMATCH;
       }
@@ -360,7 +458,7 @@ SHIM_CALL NtQueryInformationFile_shim(
     file->Release();
   }
 
-  SHIM_SET_RETURN(result);
+  SHIM_SET_RETURN_32(result);
 }
 
 SHIM_CALL NtQueryFullAttributesFile_shim(
@@ -370,17 +468,28 @@ SHIM_CALL NtQueryFullAttributesFile_shim(
 
   X_OBJECT_ATTRIBUTES attrs(SHIM_MEM_BASE, object_attributes_ptr);
 
+  char* object_name = attrs.object_name.Duplicate();
+
   XELOGD(
       "NtQueryFullAttributesFile(%.8X(%s), %.8X)",
       object_attributes_ptr,
-      attrs.object_name.buffer,
+      !object_name ? "(null)" : object_name,
       file_info_ptr);
 
   X_STATUS result = X_STATUS_NO_SUCH_FILE;
 
+  XFile* root_file = NULL;
+  if (attrs.root_directory != 0xFFFFFFFD) { // ObDosDevices
+    result = state->object_table()->GetObject(
+      attrs.root_directory, (XObject**)&root_file);
+    XEASSERT(XSUCCEEDED(result));
+    XEASSERT(root_file->type() == XObject::Type::kTypeFile);
+    XEASSERTALWAYS();
+  }
+
   // Resolve the file using the virtual file system.
   FileSystem* fs = state->file_system();
-  Entry* entry = fs->ResolvePath(attrs.object_name.buffer);
+  Entry* entry = fs->ResolvePath(object_name);
   if (entry && entry->type() == Entry::kTypeFile) {
     // Found.
     XFileInfo file_info;
@@ -390,17 +499,149 @@ SHIM_CALL NtQueryFullAttributesFile_shim(
     }
   }
 
-  SHIM_SET_RETURN(result);
+  xe_free(object_name);
+  SHIM_SET_RETURN_32(result);
 }
 
 SHIM_CALL NtQueryVolumeInformationFile_shim(
     PPCContext* ppc_state, KernelState* state) {
-  // TODO(benvanik): see if this is used.
-  XELOGD(
-      "NtQueryVolumeInformationFile(?)");
+  uint32_t file_handle = SHIM_GET_ARG_32(0);
+  uint32_t io_status_block_ptr = SHIM_GET_ARG_32(1);
+  uint32_t fs_info_ptr = SHIM_GET_ARG_32(2);
+  uint32_t length = SHIM_GET_ARG_32(3);
+  uint32_t fs_info_class = SHIM_GET_ARG_32(4);
 
-  XEASSERTALWAYS();
-  SHIM_SET_RETURN(X_STATUS_NO_SUCH_FILE);
+  XELOGD(
+      "NtQueryVolumeInformationFile(%.8X, %.8X, %.8X, %.8X, %.8X)",
+      file_handle,
+      io_status_block_ptr,
+      fs_info_ptr,
+      length,
+      fs_info_class);
+
+
+  X_STATUS result = X_STATUS_SUCCESS;
+  uint32_t info = 0;
+
+  // Grab file.
+  XFile* file = NULL;
+  result = state->object_table()->GetObject(
+      file_handle, (XObject**)&file);
+
+  if (XSUCCEEDED(result)) {
+    result = X_STATUS_SUCCESS;
+    switch (fs_info_class) {
+    case 1: { // FileFsVolumeInformation
+      auto volume_info = (XVolumeInfo*)xe_calloc(length);
+      result = file->QueryVolume(volume_info, length);
+      if (XSUCCEEDED(result)) {
+        volume_info->Write(SHIM_MEM_BASE, fs_info_ptr);
+        info = length;
+      }
+      xe_free(volume_info);
+      break;
+    }
+    case 5: { // FileFsAttributeInformation
+      auto fs_attribute_info = (XFileSystemAttributeInfo*)xe_calloc(length);
+      result = file->QueryFileSystemAttributes(fs_attribute_info, length);
+      if (XSUCCEEDED(result)) {
+        fs_attribute_info->Write(SHIM_MEM_BASE, fs_info_ptr);
+        info = length;
+      }
+      xe_free(fs_attribute_info);
+      break;
+    }
+    default:
+      // Unsupported, for now.
+      XEASSERTALWAYS();
+      info = 0;
+      break;
+    }
+  }
+
+  if (XFAILED(result)) {
+    info = 0;
+  }
+  if (io_status_block_ptr) {
+    SHIM_SET_MEM_32(io_status_block_ptr, result);   // Status
+    SHIM_SET_MEM_32(io_status_block_ptr + 4, info); // Information
+  }
+
+  if (file) {
+    file->Release();
+  }
+
+  SHIM_SET_RETURN_32(result);
+}
+
+SHIM_CALL NtQueryDirectoryFile_shim(
+    PPCContext* ppc_state, KernelState* state) {
+  uint32_t file_handle = SHIM_GET_ARG_32(0);
+  uint32_t event_handle = SHIM_GET_ARG_32(1);
+  uint32_t apc_routine = SHIM_GET_ARG_32(2);
+  uint32_t apc_context = SHIM_GET_ARG_32(3);
+  uint32_t io_status_block_ptr = SHIM_GET_ARG_32(4);
+  uint32_t file_info_ptr = SHIM_GET_ARG_32(5);
+  uint32_t length = SHIM_GET_ARG_32(6);
+  uint32_t file_name_ptr = SHIM_GET_ARG_32(7);
+  uint32_t sp = (uint32_t)ppc_state->r[1];
+  uint32_t restart_scan = SHIM_MEM_32(sp + 0x54);
+
+  char* file_name = NULL;
+  if (file_name_ptr != 0) {
+    X_ANSI_STRING xas(SHIM_MEM_BASE, file_name_ptr);
+    file_name = xas.Duplicate();
+  }
+
+  XELOGD(
+    "NtQueryDirectoryFile(%.8X, %.8X, %.8X, %.8X, %.8X, %.8X, %d, %.8X(%s), %d)",
+      file_handle,
+      event_handle,
+      apc_routine,
+      apc_context,
+      io_status_block_ptr,
+      file_info_ptr,
+      length,
+      file_name_ptr,
+      !file_name ? "(null)" : file_name,
+      restart_scan);
+
+  if (length < 72) {
+    SHIM_SET_RETURN_32(X_STATUS_INFO_LENGTH_MISMATCH);
+    xe_free(file_name);
+    return;
+  }
+
+  X_STATUS result = X_STATUS_UNSUCCESSFUL;
+  uint32_t info = 0;
+
+  XFile* file = NULL;
+  result = state->object_table()->GetObject(
+      file_handle, (XObject**)&file);
+  if (XSUCCEEDED(result)) {
+    XDirectoryInfo* dir_info = (XDirectoryInfo*)xe_calloc(length);
+    result = file->QueryDirectory(dir_info, length, file_name, restart_scan != 0);
+    if (XSUCCEEDED(result)) {
+      dir_info->Write(SHIM_MEM_BASE, file_info_ptr);
+      info = length;
+    }
+    xe_free(dir_info);
+  }
+
+  if (XFAILED(result)) {
+    info = 0;
+  }
+  if (io_status_block_ptr) {
+    SHIM_SET_MEM_32(io_status_block_ptr, result);   // Status
+    SHIM_SET_MEM_32(io_status_block_ptr + 4, info); // Information
+  }
+
+  if (file) {
+    file->Release();
+  }
+
+  xe_free(file_name);
+  SHIM_SET_RETURN_32(result);
 }
 
 SHIM_CALL FscSetCacheElementCount_shim(
@@ -414,7 +655,7 @@ SHIM_CALL FscSetCacheElementCount_shim(
       "FscSetCacheElementCount(%.8X, %.8X)",
       unk_0, unk_1);
 
-  SHIM_SET_RETURN(X_STATUS_SUCCESS);
+  SHIM_SET_RETURN_32(X_STATUS_SUCCESS);
 }
 
 
@@ -431,6 +672,7 @@ void xe::kernel::xboxkrnl::RegisterIoExports(
   SHIM_SET_MAPPING("xboxkrnl.exe", NtSetInformationFile, state);
   SHIM_SET_MAPPING("xboxkrnl.exe", NtQueryFullAttributesFile, state);
   SHIM_SET_MAPPING("xboxkrnl.exe", NtQueryVolumeInformationFile, state);
+  SHIM_SET_MAPPING("xboxkrnl.exe", NtQueryDirectoryFile, state);
 
   SHIM_SET_MAPPING("xboxkrnl.exe", FscSetCacheElementCount, state);
 }
