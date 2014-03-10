@@ -11,10 +11,13 @@
 
 #include <alloy/backend/x64/x64_backend.h>
 #include <alloy/backend/x64/x64_code_cache.h>
+#include <alloy/backend/x64/x64_selector_util.h>
 #include <alloy/backend/x64/x64_thunk_emitter.h>
-#include <alloy/backend/x64/lowering/lowering_table.h>
 #include <alloy/hir/hir_builder.h>
 #include <alloy/runtime/debug_info.h>
+
+// TODO(benvanik): fix paths.
+#include <x64_selector.y.h>
 
 using namespace alloy;
 using namespace alloy::backend;
@@ -30,6 +33,65 @@ namespace backend {
 namespace x64 {
 
 static const size_t MAX_CODE_SIZE = 1 * 1024 * 1024;
+
+void SelectTrace(FILE *stream, char *zPrefix);
+void *SelectAlloc(void *(*mallocProc)(size_t));
+void SelectFree(void *p, void (*freeProc)(void*));
+void Select(void *yyp, int yymajor, void* yyminor, X64Emitter* e);
+
+void SelectValue(void* yyp, Value* value, X64Emitter* e) {
+  int yymajor = 0;
+  if (value->IsConstant()) {
+    // TODO(benvanik): other desired constants (1, 1111, FFFF, etc).
+    if (value->IsConstantZero()) {
+      static const int __map[] = {
+        SEL_CONST_I8_0, SEL_CONST_I16_0, SEL_CONST_I32_0, SEL_CONST_I64_0, SEL_CONST_F32_0, SEL_CONST_F64_0, SEL_CONST_V128_0000,
+      };
+      yymajor = __map[value->type];
+    } else {
+      static const int __map[] = {
+        SEL_CONST_I8, SEL_CONST_I16, SEL_CONST_I32, SEL_CONST_I64, SEL_CONST_F32, SEL_CONST_F64, SEL_CONST_V128,
+      };
+      yymajor = __map[value->type];
+    }
+  } else {
+    static const int __map[] = {
+      SEL_VALUE_I8, SEL_VALUE_I16, SEL_VALUE_I32, SEL_VALUE_I64, SEL_VALUE_F32, SEL_VALUE_F64, SEL_VALUE_V128,
+    };
+    yymajor = __map[value->type];
+  }
+  XEASSERTNOTZERO(yymajor);
+  Select(yyp, yymajor, value, e);
+}
+
+void SelectOp(void* yyp, OpcodeSignatureType sig_type, Instr::Op* op, X64Emitter* e) {
+  switch (sig_type) {
+  case OPCODE_SIG_TYPE_X:
+    break;
+  case OPCODE_SIG_TYPE_L:
+    Select(yyp, SEL_LABEL, op->label, e);
+    break;
+  case OPCODE_SIG_TYPE_O:
+    Select(yyp, SEL_OFFSET, (void*)op->offset, e);
+    break;
+  case OPCODE_SIG_TYPE_S:
+    Select(yyp, SEL_SYMBOL_INFO, op->symbol_info, e);
+    break;
+  case OPCODE_SIG_TYPE_V:
+    SelectValue(yyp, op->value, e);
+    break;
+  }
+}
+
+int MapOpcodeToToken(Opcode op) {
+  static const int opcode_map[__OPCODE_MAX_VALUE] = {
+#define DEFINE_OPCODE(num, name, sig, flags) \
+    SEL_##num,
+#include <alloy/hir/opcodes.inl>
+#undef DEFINE_OPCODE
+  };
+  return opcode_map[op];
+}
 
 }  // namespace x64
 }  // namespace backend
@@ -149,7 +211,10 @@ int X64Emitter::Emit(HIRBuilder* builder, size_t& out_stack_size) {
     mov(rdx, qword[rcx + 8]); // membase
   }
 
-  auto lowering_table = backend_->lowering_table();
+  void* selector = SelectAlloc(malloc);
+  SelectTrace(stdout, "sel ");
+
+  Select(selector, SEL_FUNCTION_BEGIN, builder, this);
 
   // Body.
   auto block = builder->first_block();
@@ -161,16 +226,55 @@ int X64Emitter::Emit(HIRBuilder* builder, size_t& out_stack_size) {
       label = label->next;
     }
 
-    // Add instructions.
-    // The table will process sequences of instructions to (try to)
-    // generate optimal code.
-    current_instr_ = block->instr_head;
-    if (lowering_table->ProcessBlock(*this, block)) {
-      return 1;
+    Select(selector, SEL_BLOCK_BEGIN, block, this);
+
+    // Process instructions.
+    auto instr = block->instr_head;
+    current_instr_ = instr;
+    while (instr) {
+      bool processed = true;
+
+      const OpcodeInfo* info = instr->opcode;
+
+      OpcodeSignatureType dest_type = GET_OPCODE_SIG_TYPE_DEST(info->signature);
+      if (dest_type) {
+        SelectValue(selector, instr->dest, this);
+      }
+
+      int yymajor = MapOpcodeToToken(info->num);
+      Select(selector, yymajor, instr, this);
+
+      Select(selector, SEL_FLAGS, (void*)instr->flags, this);
+
+      OpcodeSignatureType src1_type = GET_OPCODE_SIG_TYPE_SRC1(info->signature);
+      if (src1_type) {
+        SelectOp(selector, src1_type, &instr->src1, this);
+      }
+      OpcodeSignatureType src2_type = GET_OPCODE_SIG_TYPE_SRC2(info->signature);
+      if (src2_type) {
+        SelectOp(selector, src2_type, &instr->src2, this);
+      }
+      OpcodeSignatureType src3_type = GET_OPCODE_SIG_TYPE_SRC3(info->signature);
+      if (src3_type) {
+        SelectOp(selector, src3_type, &instr->src3, this);
+      }
+
+      if (!processed) {
+        // No sequence found!
+        XELOGE("Unable to process HIR opcode %s", instr->opcode->name);
+        break;
+      }
+
+      instr = Advance(instr);
     }
+
+    Select(selector, SEL_BLOCK_END, block, this);
 
     block = block->next;
   }
+
+  Select(selector, SEL_FUNCTION_END, builder, this);
+  SelectFree(selector, free);
 
   // Function epilog.
   L("epilog");

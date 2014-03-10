@@ -2,32 +2,28 @@
  ******************************************************************************
  * Xenia : Xbox 360 Emulator Research Project                                 *
  ******************************************************************************
- * Copyright 2013 Ben Vanik. All rights reserved.                             *
+ * Copyright 2014 Ben Vanik. All rights reserved.                             *
  * Released under the BSD license - see LICENSE in the root for more details. *
  ******************************************************************************
  */
 
-#ifndef ALLOY_BACKEND_X64_LOWERING_LOWERING_SEQUENCES_H_
-#define ALLOY_BACKEND_X64_LOWERING_LOWERING_SEQUENCES_H_
+#include <alloy/backend/x64/lir/lir_opcodes.h>
 
-#include <alloy/core.h>
-#include <alloy/hir/instr.h>
+using namespace alloy;
+using namespace alloy::backend::x64::lir;
 
 
 namespace alloy {
 namespace backend {
 namespace x64 {
-namespace lowering {
+namespace lir {
 
-class LoweringTable;
+#define DEFINE_OPCODE(num, name, sig, flags) \
+    static const LIROpcodeInfo num##_info = { flags, sig, name, num, };
+#include <alloy/backend/x64/lir/lir_opcodes.inl>
+#undef DEFINE_OPCODE
 
-void RegisterSequences(LoweringTable* table);
-
-
-}  // namespace lowering
+}  // namespace lir
 }  // namespace x64
 }  // namespace backend
 }  // namespace alloy
-
-
-#endif  // ALLOY_BACKEND_X64_LOWERING_LOWERING_SEQUENCES_H_

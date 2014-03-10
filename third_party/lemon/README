@@ -1,0 +1,12 @@
+http://www.hwaci.com/sw/lemon/lemon.html
+
+Pulled from the sqlite repo on 2014/02/13:
+http://www.sqlite.org/cgi/src/finfo?name=tool/lemon.c
+http://www.sqlite.org/cgi/src/finfo?name=tool/lempar.c
+
+
+Modifications:
+- %namespace_begin and %namespace_end
+- removed a few bad things (inline includes, etc) from lempar.c
+- .c -> .cc
+- -ofoo/base.xx as target output path

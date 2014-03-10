@@ -7,8 +7,8 @@
  ******************************************************************************
  */
 
-#ifndef ALLOY_BACKEND_X64_X64_LOWERING_LOWERING_TABLE_H_
-#define ALLOY_BACKEND_X64_X64_LOWERING_LOWERING_TABLE_H_
+#ifndef ALLOY_BACKEND_X64_LOWERING_LOWERING_TABLE_H_
+#define ALLOY_BACKEND_X64_LOWERING_LOWERING_TABLE_H_
 
 #include <alloy/core.h>
 #include <alloy/hir/hir_builder.h>
@@ -55,4 +55,4 @@ private:
 }  // namespace alloy
 
 
-#endif  // ALLOY_BACKEND_X64_X64_LOWERING_LOWERING_TABLE_H_
+#endif  // ALLOY_BACKEND_X64_LOWERING_LOWERING_TABLE_H_
