@@ -7,6 +7,8 @@
  ******************************************************************************
  */
 
+// Jan4V added redirection from xbox 360 calls to Wsock. It will most likely crash...
+
 #include <winsock2.h>
 
 #include <xenia/kernel/xam_net.h>
@@ -50,7 +52,12 @@ SHIM_CALL NetDll_WSAStartup_shim(
       version,
       data_ptr);
 
-  if (data_ptr) {
+  LPWSADATA lpWSAData;
+
+  int result = WSAStartup(version,lpWSAData);
+
+  SHIM_SET_MEM_32(data_ptr,lpWSAData);
+  /*if (data_ptr) {
     SHIM_SET_MEM_16(data_ptr + 0x000, version);
     SHIM_SET_MEM_16(data_ptr + 0x002, 0);
     SHIM_SET_MEM_32(data_ptr + 0x004, 0);
@@ -58,15 +65,16 @@ SHIM_CALL NetDll_WSAStartup_shim(
     SHIM_SET_MEM_16(data_ptr + 0x186, 0);
     SHIM_SET_MEM_16(data_ptr + 0x188, 0);
     SHIM_SET_MEM_32(data_ptr + 0x190, 0);
-  }
+  }*/
 
-  SHIM_SET_RETURN_64(0);
+
+  SHIM_SET_RETURN_64(result);
 }
 
 SHIM_CALL NetDll_WSAGetLastError_shim(
     PPCContext* ppc_state, KernelState* state) {
   XELOGD("NetDll_WSAGetLastError()");
-  SHIM_SET_RETURN_32(WSAENETDOWN);
+  SHIM_SET_RETURN_32(WSAGetLastError());
 }
 
 SHIM_CALL NetDll_XNetGetEthernetLinkStatus_shim(
@@ -77,7 +85,10 @@ SHIM_CALL NetDll_XNetGetEthernetLinkStatus_shim(
   XELOGD(
       "NetDll_XNetGetEthernetLinkStatus(%d)",
       arg0);
-  SHIM_SET_RETURN_32(0);
+
+  ///TODO: Return 0 if net not done
+
+  SHIM_SET_RETURN_32(1);
 }
 
 SHIM_CALL NetDll_inet_addr_shim(
@@ -86,7 +97,7 @@ SHIM_CALL NetDll_inet_addr_shim(
   XELOGD(
       "NetDll_inet_addr(%.8X)",
       cp_ptr);
-  SHIM_SET_RETURN_32(INADDR_NONE);
+  SHIM_SET_RETURN_32(inet_addr(cp_ptr));
 }
 
 SHIM_CALL NetDll_socket_shim(
@@ -101,7 +112,7 @@ SHIM_CALL NetDll_socket_shim(
       af,
       type,
       protocol);
-  SHIM_SET_RETURN_32(SOCKET_ERROR);
+  SHIM_SET_RETURN_32(socket(af,type,protocol));
 }
 
 SHIM_CALL NetDll_setsockopt_shim(
@@ -120,7 +131,7 @@ SHIM_CALL NetDll_setsockopt_shim(
       optname,
       optval_ptr,
       optlen);
-  SHIM_SET_RETURN_32(SOCKET_ERROR);
+  SHIM_SET_RETURN_32(setsockopt(*socket_ptr,level,optname,optval_ptr,optlen));
 }
 
 SHIM_CALL NetDll_connect_shim(
@@ -133,7 +144,7 @@ SHIM_CALL NetDll_connect_shim(
       socket_ptr,
       sockaddr_ptr,
       namelen);
-  SHIM_SET_RETURN_32(SOCKET_ERROR);
+  SHIM_SET_RETURN_32(connect(*socket_ptr,sockaddr_ptr,namelen));
 }
 
 SHIM_CALL NetDll_recv_shim(
@@ -150,7 +161,14 @@ SHIM_CALL NetDll_recv_shim(
       buf_ptr,
       len,
       flags);
-  SHIM_SET_RETURN_32(SOCKET_ERROR);
+
+  char *buf;
+
+  recv(*socket_ptr,buf,len,flags);
+
+  int result = SHIM_SET_MEM_32(buf_ptr,*buf);
+
+  SHIM_SET_RETURN_32(result);
 }
 
 SHIM_CALL NetDll_recvfrom_shim(
@@ -171,7 +189,12 @@ SHIM_CALL NetDll_recvfrom_shim(
       flags,
       from_ptr,
       fromlen_ptr);
-  SHIM_SET_RETURN_32(SOCKET_ERROR);
+
+  int result = recvfrom(*socket_ptr,buf_ptr,len,flags,from_ptr,fromlen_ptr);
+  SHIM_SET_MEM_32(buf_ptr,*buf_ptr);
+  SHIM_SET_MEM_32(from_ptr,*from_ptr);
+
+  SHIM_SET_RETURN_32(result);
 }
 
 SHIM_CALL NetDll_send_shim(
@@ -186,7 +209,7 @@ SHIM_CALL NetDll_send_shim(
       buf_ptr,
       len,
       flags);
-  SHIM_SET_RETURN_32(SOCKET_ERROR);
+  SHIM_SET_RETURN_32(send(*socket_ptr,buf_ptr,len,flags));
 }
 
 
